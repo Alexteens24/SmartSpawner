@@ -228,9 +228,10 @@ public class SpawnerStorageUI {
             return;
         }
 
-        if (totalPages == -1) {
-            totalPages = calculateTotalPages(spawner);
-        }
+        try {
+            if (totalPages == -1) {
+                totalPages = calculateTotalPages(spawner);
+            }
 
         // Track both changes and slots that need to be emptied
         Map<Integer, ItemStack> updates = new HashMap<>();
@@ -276,40 +277,25 @@ public class SpawnerStorageUI {
         int currentUsedSlots = spawner.getVirtualInventory().getUsedSlots();
 
         // Only recalculate total pages if there's a significant change
-        if (oldUsedSlots != currentUsedSlots) {
-            int newTotalPages = calculateTotalPages(spawner);
-            holder.setTotalPages(newTotalPages);
-            holder.updateOldUsedSlots();
-        }
-    }
-
-    private void addPageItems(Map<Integer, ItemStack> updates, Set<Integer> slotsToEmpty,
-                              SpawnerData spawner, int page) {
-        try {
-            // Get display items directly from VirtualInventory (source of truth)
-            VirtualInventory virtualInv = spawner.getVirtualInventory();
-            Map<Integer, ItemStack> displayItems = virtualInv.getDisplayInventory();
-
-            if (displayItems.isEmpty()) {
-                return;
-            }
-
-            // Calculate start index for current page
-            int startIndex = (page - 1) * StoragePageHolder.MAX_ITEMS_PER_PAGE;
-
-            // Add items for this page
-            for (Map.Entry<Integer, ItemStack> entry : displayItems.entrySet()) {
-                int globalIndex = entry.getKey();
-
-                // Check if item belongs on this page
-                if (globalIndex >= startIndex && globalIndex < startIndex + StoragePageHolder.MAX_ITEMS_PER_PAGE) {
-                    int displaySlot = globalIndex - startIndex;
-                    updates.put(displaySlot, entry.getValue());
-                    slotsToEmpty.remove(displaySlot);
-                }
+            if (oldUsedSlots != currentUsedSlots) {
+                int newTotalPages = calculateTotalPages(spawner);
+                holder.setTotalPages(newTotalPages);
+                holder.updateOldUsedSlots();
             }
         } finally {
             spawner.getInventoryLock().unlock();
+        }
+    }
+
+    private void addPageItems(Map<Integer, ItemStack> updates, Set<Integer> slotsToEmpty, SpawnerData spawner, int page) {
+        VirtualInventory virtualInv = spawner.getVirtualInventory();
+        Map<Integer, ItemStack> displayItems =
+                virtualInv.getDisplayPage(page, StoragePageHolder.MAX_ITEMS_PER_PAGE);
+
+        for (Map.Entry<Integer, ItemStack> entry : displayItems.entrySet()) {
+            int displaySlot = entry.getKey();
+            updates.put(displaySlot, entry.getValue());
+            slotsToEmpty.remove(displaySlot);
         }
     }
 
@@ -602,7 +588,7 @@ public class SpawnerStorageUI {
         Map<Material, Long> materialAmountMap = new HashMap<>();
         for (Map.Entry<ItemSignature, Long> entry : storedItems.entrySet()) {
             Material mat = entry.getKey().getMaterial();
-            materialAmountMap.merge(mat, entry.getValue(), Long::sum);
+            materialAmountMap.merge(mat, entry.getValue(), SpawnerStorageUI::saturatingAdd);
         }
 
         EntityLootConfig lootConfig;
@@ -640,6 +626,10 @@ public class SpawnerStorageUI {
             }
         }
         return components;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        return right > 0L && left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 
     private void startCleanupTask() {

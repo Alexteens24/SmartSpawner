@@ -289,7 +289,7 @@ public class SpawnerMenuUI {
         Map<Material, Long> materialAmountMap = new HashMap<>();
         for (Map.Entry<ItemSignature, Long> entry : storedItems.entrySet()) {
             Material material = entry.getKey().getMaterial();
-            materialAmountMap.merge(material, entry.getValue(), Long::sum);
+            materialAmountMap.merge(material, entry.getValue(), SpawnerMenuUI::saturatingAdd);
         }
 
         // Get possible loot items
@@ -602,7 +602,7 @@ public class SpawnerMenuUI {
         Map<Material, Long> materialAmountMap = new HashMap<>();
         for (Map.Entry<ItemSignature, Long> entry : storedItems.entrySet()) {
             Material material = entry.getKey().getMaterial();
-            materialAmountMap.merge(material, entry.getValue(), Long::sum);
+            materialAmountMap.merge(material, entry.getValue(), SpawnerMenuUI::saturatingAdd);
         }
 
         EntityLootConfig lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(entityType);
@@ -636,6 +636,10 @@ public class SpawnerMenuUI {
             }
         }
         return components;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        return right > 0L && left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 
     /**

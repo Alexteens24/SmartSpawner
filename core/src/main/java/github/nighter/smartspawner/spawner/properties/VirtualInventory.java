@@ -1,298 +1,297 @@
 package github.nighter.smartspawner.spawner.properties;
 
 import lombok.Getter;
+import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * A logical inventory which stores one template and a long count per distinct item.
+ * Physical ItemStacks are created only for the page/range currently being displayed.
+ */
 public class VirtualInventory {
-    private final Map<ItemSignature, Long> consolidatedItems;
+    private final Map<ItemSignature, Long> consolidatedItems = new ConcurrentHashMap<>();
     @Getter
-    private int maxSlots;
-    private final Map<Integer, ItemStack> displayInventoryCache;
-    private boolean displayCacheDirty;
-    private int usedSlotsCache;
-    private long totalItemsCache;
-    private boolean metricsCacheDirty;
-    // Cache sorted entries to avoid resorting when display isn't changing
-    private List<Map.Entry<ItemSignature, Long>> sortedEntriesCache;
-    private org.bukkit.Material preferredSortMaterial;
+    private volatile int maxSlots;
+    private volatile List<Map.Entry<ItemSignature, Long>> sortedEntriesCache;
+    private volatile Material preferredSortMaterial;
 
     public VirtualInventory(int maxSlots) {
-        this.maxSlots = maxSlots;
-        this.consolidatedItems = new ConcurrentHashMap<>();
-        this.displayInventoryCache = new HashMap<>(maxSlots); // Pre-size the map
-        this.displayCacheDirty = true;
-        this.metricsCacheDirty = true;
-        this.usedSlotsCache = 0;
-        this.totalItemsCache = 0;
-        this.sortedEntriesCache = null;
-        this.preferredSortMaterial = null;
+        this.maxSlots = Math.max(0, maxSlots);
     }
 
     public static ItemSignature getSignature(ItemStack item) {
         return new ItemSignature(item);
     }
 
-    // Add items in bulk with minimal operations
+    public void addItem(ItemStack item, long amount) {
+        if (item == null || item.getType() == Material.AIR || amount <= 0L) {
+            return;
+        }
+        addItems(Map.of(getSignature(item), amount));
+    }
+
     public void addItems(List<ItemStack> items) {
-        if (items.isEmpty()) return;
-
-        // Pre-allocate space for batch processing
-        Map<ItemSignature, Long> itemBatch = new HashMap<>(items.size());
-
-        // Consolidate all items first
-        for (ItemStack item : items) {
-            if (item == null || item.getAmount() <= 0) continue;
-            ItemSignature sig = getSignature(item); // Use cached signature
-            itemBatch.merge(sig, (long) item.getAmount(), (a, b) -> a + b);
+        if (items == null || items.isEmpty()) {
+            return;
         }
 
-        // Apply all changes in one operation
-        if (!itemBatch.isEmpty()) {
-            for (Map.Entry<ItemSignature, Long> entry : itemBatch.entrySet()) {
-                consolidatedItems.merge(entry.getKey(), entry.getValue(), (a, b) -> a + b);
+        Map<ItemSignature, Long> consolidated = new HashMap<>(items.size());
+        for (ItemStack item : items) {
+            if (item == null || item.getType() == Material.AIR || item.getAmount() <= 0) {
+                continue;
             }
-            displayCacheDirty = true;
-            metricsCacheDirty = true;
-            sortedEntriesCache = null;
+            consolidated.merge(getSignature(item), (long) item.getAmount(), VirtualInventory::saturatingAdd);
+        }
+        addItems(consolidated);
+    }
+
+    public void addItems(Map<ItemSignature, Long> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+
+        boolean changed = false;
+        for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+            ItemSignature signature = entry.getKey();
+            Long amount = entry.getValue();
+            if (signature == null || amount == null || amount <= 0L) {
+                continue;
+            }
+            consolidatedItems.merge(signature, amount, VirtualInventory::saturatingAdd);
+            changed = true;
+        }
+        if (changed) {
+            invalidateDisplayCache();
         }
     }
-    // Remove items in bulk with minimal operations
-    public boolean removeItems(List<ItemStack> items) {
-        if (items.isEmpty()) return true;
 
-        Map<ItemSignature, Long> toRemove = new HashMap<>();
-
-        // Calculate total amounts to remove in a single pass
-        for (ItemStack item : items) {
-            if (item == null || item.getAmount() <= 0) continue;
-            // Use cached signature to avoid excessive cloning
-            ItemSignature sig = getSignature(item);
-            toRemove.merge(sig, (long) item.getAmount(), (a, b) -> a + b);
+    public boolean containsAtLeast(Map<ItemSignature, Long> items) {
+        if (items == null || items.isEmpty()) {
+            return true;
         }
-
-        if (toRemove.isEmpty()) return true;
-
-        // Verify we have enough of each item
-        for (Map.Entry<ItemSignature, Long> entry : toRemove.entrySet()) {
-            Long currentAmount = consolidatedItems.getOrDefault(entry.getKey(), 0L);
-            if (currentAmount < entry.getValue()) {
+        for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null || entry.getValue() <= 0L) {
+                continue;
+            }
+            if (consolidatedItems.getOrDefault(entry.getKey(), 0L) < entry.getValue()) {
                 return false;
             }
         }
-
-        // Perform removals all at once
-        boolean updated = false;
-        for (Map.Entry<ItemSignature, Long> entry : toRemove.entrySet()) {
-            ItemSignature sig = entry.getKey();
-            long amountToRemove = entry.getValue();
-
-            consolidatedItems.computeIfPresent(sig, (key, current) -> {
-                long newAmount = current - amountToRemove;
-                return newAmount <= 0 ? null : newAmount;
-            });
-
-            updated = true;
-        }
-
-        if (updated) {
-            displayCacheDirty = true;
-            metricsCacheDirty = true;
-            sortedEntriesCache = null; // Invalidate sorted entries cache
-        }
-
         return true;
     }
 
-    // Optimized getDisplayInventory method
-    public Map<Integer, ItemStack> getDisplayInventory() {
-        // Return cached result if available
-        if (!displayCacheDirty) {
-            // Return a shallow copy to prevent modification of the cache
-            return Collections.unmodifiableMap(displayInventoryCache);
+    public boolean removeItems(List<ItemStack> items) {
+        if (items == null || items.isEmpty()) {
+            return true;
         }
 
-        // Clear the cache for a fresh rebuild but reuse the existing map
-        displayInventoryCache.clear();
+        Map<ItemSignature, Long> consolidated = new HashMap<>(items.size());
+        for (ItemStack item : items) {
+            if (item == null || item.getType() == Material.AIR || item.getAmount() <= 0) {
+                continue;
+            }
+            consolidated.merge(getSignature(item), (long) item.getAmount(), VirtualInventory::saturatingAdd);
+        }
+        return removeItems(consolidated);
+    }
 
-        if (consolidatedItems.isEmpty()) {
-            displayCacheDirty = false;
-            usedSlotsCache = 0;
+    public boolean removeItems(Map<ItemSignature, Long> items) {
+        if (items == null || items.isEmpty()) {
+            return true;
+        }
+
+        Map<ItemSignature, Long> normalized = new HashMap<>(items.size());
+        for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+            ItemSignature signature = entry.getKey();
+            Long amount = entry.getValue();
+            if (signature == null || amount == null || amount <= 0L) {
+                continue;
+            }
+            normalized.merge(signature, amount, VirtualInventory::saturatingAdd);
+        }
+        if (normalized.isEmpty()) {
+            return true;
+        }
+        if (!containsAtLeast(normalized)) {
+            return false;
+        }
+
+        for (Map.Entry<ItemSignature, Long> entry : normalized.entrySet()) {
+            consolidatedItems.computeIfPresent(entry.getKey(), (ignored, current) -> {
+                long remaining = current - entry.getValue();
+                return remaining > 0L ? remaining : null;
+            });
+        }
+        invalidateDisplayCache();
+        return true;
+    }
+
+    /**
+     * Compatibility method. Callers handling large inventories should request a page/range.
+     */
+    public Map<Integer, ItemStack> getDisplayInventory() {
+        return getDisplayRange(0L, maxSlots);
+    }
+
+    public Map<Integer, ItemStack> getDisplayPage(int page, int pageSize) {
+        if (pageSize <= 0) {
+            return Collections.emptyMap();
+        }
+        long safePage = Math.max(1L, page);
+        long startSlot = (safePage - 1L) * pageSize;
+        return getDisplayRange(startSlot, pageSize);
+    }
+
+    public Map<Integer, ItemStack> getDisplayRange(long startSlot, int maxResults) {
+        if (maxResults <= 0 || startSlot < 0L || startSlot >= maxSlots || consolidatedItems.isEmpty()) {
             return Collections.emptyMap();
         }
 
-        // Get and sort the items - only use cached sort result if available
-        if (sortedEntriesCache == null) {
-            sortedEntriesCache = new ArrayList<>(consolidatedItems.entrySet());
-            // Apply preferred sort if set, otherwise sort alphabetically
-            if (preferredSortMaterial != null) {
-                sortedEntriesCache.sort((e1, e2) -> {
-                    // Use getTemplateRef() to avoid cloning - we only need to read the type
-                    boolean e1Preferred = e1.getKey().getMaterial() == preferredSortMaterial;
-                    boolean e2Preferred = e2.getKey().getMaterial() == preferredSortMaterial;
-
-                    if (e1Preferred && !e2Preferred) return -1;
-                    if (!e1Preferred && e2Preferred) return 1;
-                    
-                    // Both preferred or both not preferred, sort by material name
-                    return e1.getKey().getMaterialName().compareTo(e2.getKey().getMaterialName());
-                });
-            } else {
-                // Use optimized comparator based on cached material name
-                sortedEntriesCache.sort(Comparator.comparing(e -> e.getKey().getMaterialName()));
-            }
+        int sectionLimit = (int) Math.min((long) maxResults, (long) maxSlots - startSlot);
+        if (sectionLimit <= 0) {
+            return Collections.emptyMap();
         }
 
-        // Process items directly to the display inventory
-        int currentSlot = 0;
+        Map<Integer, ItemStack> section = new LinkedHashMap<>(Math.min(sectionLimit, 45));
+        long currentGlobalSlot = 0L;
+        int relativeSlot = 0;
 
-        for (Map.Entry<ItemSignature, Long> entry : sortedEntriesCache) {
-            if (currentSlot >= maxSlots) break;
+        for (Map.Entry<ItemSignature, Long> entry : getSortedEntries()) {
+            if (relativeSlot >= sectionLimit || currentGlobalSlot >= maxSlots) {
+                break;
+            }
 
-            ItemSignature sig = entry.getKey();
+            ItemSignature signature = entry.getKey();
+            int maxStackSize = signature.getMaxStackSize();
             long totalAmount = entry.getValue();
-            int maxStackSize = sig.getMaxStackSize();
+            if (maxStackSize <= 0 || totalAmount <= 0L) {
+                continue;
+            }
 
-            // Create as many stacks as needed for this item type
-            while (totalAmount > 0 && currentSlot < maxSlots) {
-                int stackSize = (int) Math.min(totalAmount, maxStackSize);
+            long stacksForEntry = slotsFor(totalAmount, maxStackSize);
+            if (stacksForEntry <= startSlot - currentGlobalSlot) {
+                currentGlobalSlot += stacksForEntry;
+                continue;
+            }
 
-                // Create the display item only once per slot
-                ItemStack displayItem = sig.getTemplate();
-                displayItem.setAmount(stackSize);
+            long stacksToSkip = Math.max(0L, startSlot - currentGlobalSlot);
+            long skippedItems = saturatedMultiply(stacksToSkip, maxStackSize);
+            long remainingAmount = Math.max(0L, totalAmount - skippedItems);
+            currentGlobalSlot += stacksToSkip;
 
-                // Store in cache
-                displayInventoryCache.put(currentSlot, displayItem);
-
-                totalAmount -= stackSize;
-                currentSlot++;
+            while (remainingAmount > 0L
+                    && relativeSlot < sectionLimit
+                    && currentGlobalSlot < maxSlots) {
+                ItemStack displayItem = signature.getTemplate();
+                int displayedAmount = (int) Math.min(remainingAmount, maxStackSize);
+                displayItem.setAmount(displayedAmount);
+                section.put(relativeSlot++, displayItem);
+                remainingAmount -= displayedAmount;
+                currentGlobalSlot++;
             }
         }
 
-        // Update cache state
-        displayCacheDirty = false;
-        usedSlotsCache = displayInventoryCache.size();
-
-        // Return unmodifiable map to prevent external changes
-        return Collections.unmodifiableMap(displayInventoryCache);
-    }
-
-    public long getTotalItems() {
-        if (metricsCacheDirty) {
-            updateMetricsCache();
-        }
-        return totalItemsCache;
+        return Collections.unmodifiableMap(section);
     }
 
     public Map<ItemSignature, Long> getConsolidatedItems() {
         return new HashMap<>(consolidatedItems);
     }
 
-    public int getUsedSlots() {
-        // If cache is dirty but we haven't regenerated the display inventory yet,
-        // calculate a quick estimate instead of rebuilding the whole display
-        if (displayCacheDirty) {
-            if (consolidatedItems.isEmpty()) {
-                return 0;
+    public long getTotalItems() {
+        long total = 0L;
+        for (Long amount : consolidatedItems.values()) {
+            if (amount != null && amount > 0L) {
+                total = saturatingAdd(total, amount);
             }
-
-            // Quick estimate - not perfectly accurate but avoids full rebuilds
-            int estimatedSlots = 0;
-            for (Map.Entry<ItemSignature, Long> entry : consolidatedItems.entrySet()) {
-                long amount = entry.getValue();
-                int maxStackSize = entry.getKey().getMaxStackSize();
-                estimatedSlots += (int) Math.ceil((double) amount / maxStackSize);
-                if (estimatedSlots >= maxSlots) {
-                    return maxSlots; // Cap at max slots
-                }
-            }
-            return estimatedSlots;
         }
-
-        return usedSlotsCache;
+        return total;
     }
 
-    private void updateMetricsCache() {
-        totalItemsCache = consolidatedItems.values().stream()
-                .mapToLong(Long::longValue)
-                .sum();
-        metricsCacheDirty = false;
+    public int getUsedSlots() {
+        long total = 0L;
+        for (Map.Entry<ItemSignature, Long> entry : consolidatedItems.entrySet()) {
+            long entrySlots = slotsFor(entry.getValue(), entry.getKey().getMaxStackSize());
+            if (entrySlots >= (long) maxSlots - total) {
+                return maxSlots;
+            }
+            total += entrySlots;
+        }
+        return (int) total;
     }
 
     public boolean isDirty() {
-        return displayCacheDirty;
+        return sortedEntriesCache == null;
     }
 
-    /**
-     * Sorts items with the specified material type prioritized first.
-     * This method optimizes by only invalidating caches when necessary.
-     * 
-     * @param preferredMaterial The material to sort first, or null for no preference
-     */
-    public void sortItems(org.bukkit.Material preferredMaterial) {
-        // Store the preferred material for future cache rebuilds
+    public void sortItems(Material preferredMaterial) {
         this.preferredSortMaterial = preferredMaterial;
-        
-        // Clear the sorted cache to force re-sorting with new preference
-        this.sortedEntriesCache = null;
-        
-        // Only proceed if we have items to sort
-        if (consolidatedItems.isEmpty()) {
-            this.displayCacheDirty = true;
-            return;
-        }
-        
-        // Generate new sorted entries with preference
-        if (preferredMaterial != null) {
-            this.sortedEntriesCache = consolidatedItems.entrySet().stream()
-                .sorted((e1, e2) -> {
-                    // Use getTemplateRef() to avoid cloning - we only need to read the type
-                    boolean e1Preferred = e1.getKey().getMaterial() == preferredMaterial;
-                    boolean e2Preferred = e2.getKey().getMaterial() == preferredMaterial;
-
-                    if (e1Preferred && !e2Preferred) return -1;
-                    if (!e1Preferred && e2Preferred) return 1;
-                    
-                    // Both preferred or both not preferred, sort by material name
-                    return e1.getKey().getMaterialName().compareTo(e2.getKey().getMaterialName());
-                })
-                .collect(java.util.stream.Collectors.toList());
-        } else {
-            // No preference, sort alphabetically by material name
-            this.sortedEntriesCache = consolidatedItems.entrySet().stream()
-                .sorted(Comparator.comparing(e -> e.getKey().getMaterialName()))
-                .collect(java.util.stream.Collectors.toList());
-        }
-        
-        // Mark display cache as dirty to force regeneration
-        this.displayCacheDirty = true;
+        invalidateDisplayCache();
     }
 
-    /**
-     * Resizes the virtual inventory to a new maximum slot count.
-     * If the new size is smaller and items exceed the new capacity,
-     * items will be truncated based on the current sort order.
-     *
-     * @param newMaxSlots The new maximum number of slots
-     */
     public void resize(int newMaxSlots) {
-        if (newMaxSlots == this.maxSlots) {
-            return; // No change needed
+        this.maxSlots = Math.max(0, newMaxSlots);
+    }
+
+    public void setMaxSlots(int newMaxSlots) {
+        resize(newMaxSlots);
+    }
+
+    private synchronized List<Map.Entry<ItemSignature, Long>> getSortedEntries() {
+        List<Map.Entry<ItemSignature, Long>> cached = sortedEntriesCache;
+        if (cached != null) {
+            return cached;
         }
 
-        this.maxSlots = newMaxSlots;
-
-        // Mark caches as dirty since slot count changed
-        this.displayCacheDirty = true;
-
-        // If downsizing, we may need to remove items that exceed capacity
-        if (newMaxSlots < usedSlotsCache) {
-            // Let the display inventory rebuild handle the truncation naturally
-            // Items beyond maxSlots will simply not be displayed
-            // Note: This doesn't remove items from consolidatedItems,
-            // but they won't be accessible in the display
+        List<Map.Entry<ItemSignature, Long>> rebuilt = new ArrayList<>(consolidatedItems.entrySet());
+        Comparator<Map.Entry<ItemSignature, Long>> byMaterial =
+                Comparator.comparing(entry -> entry.getKey().getMaterialName());
+        if (preferredSortMaterial != null) {
+            rebuilt.sort(Comparator
+                    .comparing((Map.Entry<ItemSignature, Long> entry) ->
+                            entry.getKey().getMaterial() != preferredSortMaterial)
+                    .thenComparing(byMaterial));
+        } else {
+            rebuilt.sort(byMaterial);
         }
+        sortedEntriesCache = rebuilt;
+        return rebuilt;
+    }
+
+    private synchronized void invalidateDisplayCache() {
+        sortedEntriesCache = null;
+    }
+
+    private static long slotsFor(long amount, int maxStackSize) {
+        if (amount <= 0L || maxStackSize <= 0) {
+            return 0L;
+        }
+        return ((amount - 1L) / maxStackSize) + 1L;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (right > 0L && left > Long.MAX_VALUE - right) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
+    }
+
+    private static long saturatedMultiply(long left, long right) {
+        if (left <= 0L || right <= 0L) {
+            return 0L;
+        }
+        if (left > Long.MAX_VALUE / right) {
+            return Long.MAX_VALUE;
+        }
+        return left * right;
     }
 }

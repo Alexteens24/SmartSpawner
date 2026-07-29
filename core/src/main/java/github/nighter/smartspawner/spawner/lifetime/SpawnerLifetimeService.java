@@ -2,11 +2,11 @@ package github.nighter.smartspawner.spawner.lifetime;
 
 import github.nighter.smartspawner.Scheduler;
 import github.nighter.smartspawner.SmartSpawner;
+import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
-import org.bukkit.inventory.ItemStack;
+import github.nighter.smartspawner.spawner.properties.VirtualInventory;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Map;
 
 public final class SpawnerLifetimeService {
     private static final long CHECK_INTERVAL_TICKS = 20L;
@@ -52,9 +52,14 @@ public final class SpawnerLifetimeService {
     }
 
     private void expire(SpawnerData spawner) {
+        if (spawner.isSelling()) {
+            return;
+        }
+
         spawner.getDataLock().lock();
         try {
-            if (spawner.isExpired() || !spawner.isTimed() || spawner.getRemainingLifetimeMillis() > 0L) {
+            if (spawner.isSelling() || spawner.isExpired()
+                    || !spawner.isTimed() || spawner.getRemainingLifetimeMillis() > 0L) {
                 return;
             }
 
@@ -63,15 +68,9 @@ public final class SpawnerLifetimeService {
             spawner.getSpawnerStop().set(true);
             spawner.clearPreGeneratedLoot();
 
-            List<ItemStack> emptySpawners = new ArrayList<>();
-            int remaining = spawner.getStackSize();
-            int maxStack = plugin.getSpawnerItemFactory().createEmptySpawnerItem().getMaxStackSize();
-            while (remaining > 0) {
-                int amount = Math.min(maxStack, remaining);
-                emptySpawners.add(plugin.getSpawnerItemFactory().createEmptySpawnerItem(amount));
-                remaining -= amount;
-            }
-            spawner.addItemsAndUpdateSellValue(emptySpawners);
+            ItemSignature emptySpawner = VirtualInventory.getSignature(
+                    plugin.getSpawnerItemFactory().createEmptySpawnerItem());
+            spawner.addItemsAndUpdateSellValue(Map.of(emptySpawner, (long) spawner.getStackSize()));
             spawner.updateHologramData();
             plugin.getSpawnerManager().markSpawnerModified(spawner.getSpawnerId());
 

@@ -4,8 +4,9 @@ import lombok.Getter;
 import lombok.experimental.Accessors;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
+
+import java.util.Objects;
 
 public class ItemSignature {
     private final ItemStack template;
@@ -24,24 +25,10 @@ public class ItemSignature {
         ItemMeta meta = template.hasItemMeta() ? template.getItemMeta() : null;
 
         this.hasItemMeta = meta != null;
-        this.damage = extractDamage(meta);
-        this.hashCode = calculateHashCode(meta);
-    }
-
-    // Replace the current calculateHashCode() method with:
-    private int calculateHashCode(ItemMeta meta) {
-        // Use a faster hash algorithm and cache more item properties
-        int result = 31 * this.material.ordinal(); // Using ordinal() instead of name() hashing
-        result = 31 * result + this.damage;
-
-        // Only access ItemMeta when needed
-        if (this.hasItemMeta) {
-            // Extract only the essential meta properties that determine similarity
-            result = 31 * result + (meta.hasDisplayName() ? meta.displayName().hashCode() : 0);
-            result = 31 * result + (meta.hasLore() ? meta.lore().hashCode() : 0);
-            result = 31 * result + (meta.hasEnchants() ? meta.getEnchants().hashCode() : 0);
-        }
-        return result;
+        this.damage = meta instanceof org.bukkit.inventory.meta.Damageable damageable
+                ? damageable.getDamage()
+                : 0;
+        this.hashCode = 31 * material.hashCode() + Objects.hashCode(meta);
     }
 
     @Override
@@ -49,22 +36,9 @@ public class ItemSignature {
         if (this == o) return true;
         if (!(o instanceof ItemSignature that)) return false;
 
-        // First compare cheap properties
-        if (material != that.material || this.damage != that.damage) {
-            return false;
-        }
-
-        if (this.hasItemMeta != that.hasItemMeta) {
-            return false;
-        }
-
-        // If both have no meta, they're similar enough
-        if (!this.hasItemMeta) {
-            return true;
-        }
-
-        // For complex items, fall back to isSimilar but only as a last resort
-        return template.isSimilar(that.template);
+        return material == that.material
+                && damage == that.damage
+                && Objects.equals(template.getItemMeta(), that.template.getItemMeta());
     }
 
     @Override
@@ -83,13 +57,6 @@ public class ItemSignature {
 
     public String getMaterialName() {
         return material.name();
-    }
-
-    private int extractDamage(ItemMeta meta) {
-        if (meta instanceof Damageable damageable) {
-            return damageable.getDamage();
-        }
-        return 0;
     }
 
 }

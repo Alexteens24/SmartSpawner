@@ -128,7 +128,7 @@ public class SpawnerData {
     private Material preferredSortItem;
 
     // CRITICAL: Pre-generated loot storage for better UX - access must be synchronized via lootGenerationLock
-    private volatile List<ItemStack> preGeneratedItems;
+    private volatile Map<ItemSignature, Long> preGeneratedItems;
     private volatile long preGeneratedExperience;
     private volatile boolean isPreGenerating;
 
@@ -590,13 +590,17 @@ public class SpawnerData {
 
         double addedValue = 0.0;
         for (Map.Entry<ItemSignature, Long> entry : itemsAdded.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null || entry.getValue() <= 0L) {
+                continue;
+            }
             double itemPrice = findItemPrice(entry.getKey(), priceCache);
-            if (itemPrice > 0.0) {
-                addedValue += itemPrice * entry.getValue();
+            if (Double.isFinite(itemPrice) && itemPrice > 0.0) {
+                addedValue = saturatingMoneyAdd(
+                        addedValue, saturatingMoneyMultiply(itemPrice, entry.getValue()));
             }
         }
 
-        this.accumulatedSellValue += addedValue;
+        this.accumulatedSellValue = saturatingMoneyAdd(this.accumulatedSellValue, addedValue);
         this.sellValueDirty = false;
     }
 
@@ -605,25 +609,20 @@ public class SpawnerData {
      * @param itemsRemoved List of items removed
      * @param priceCache Price cache from loot config
      */
-    public void decrementSellValue(List<ItemStack> itemsRemoved, Map<String, Double> priceCache) {
+    public void decrementSellValue(Map<ItemSignature, Long> itemsRemoved, Map<String, Double> priceCache) {
         if (itemsRemoved == null || itemsRemoved.isEmpty()) {
             return;
         }
 
-        // Consolidate removed items
-        Map<ItemSignature, Long> consolidated = new java.util.HashMap<>();
-        for (ItemStack item : itemsRemoved) {
-            if (item == null || item.getAmount() <= 0) continue;
-            // Use cached signature to avoid excessive cloning
-            ItemSignature sig = VirtualInventory.getSignature(item);
-            consolidated.merge(sig, (long) item.getAmount(), (a, b) -> a + b);
-        }
-
         double removedValue = 0.0;
-        for (Map.Entry<ItemSignature, Long> entry : consolidated.entrySet()) {
+        for (Map.Entry<ItemSignature, Long> entry : itemsRemoved.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null || entry.getValue() <= 0L) {
+                continue;
+            }
             double itemPrice = findItemPrice(entry.getKey(), priceCache);
-            if (itemPrice > 0.0) {
-                removedValue += itemPrice * entry.getValue();
+            if (Double.isFinite(itemPrice) && itemPrice > 0.0) {
+                removedValue = saturatingMoneyAdd(
+                        removedValue, saturatingMoneyMultiply(itemPrice, entry.getValue()));
             }
         }
 
@@ -635,28 +634,29 @@ public class SpawnerData {
      * Should be called when the cache is dirty or on spawner load
      */
     public void recalculateSellValue() {
-        if (lootConfig == null) {
-            this.accumulatedSellValue = 0.0;
-            this.sellValueDirty = false;
-            return;
-        }
-
-        // Get price cache
-        Map<String, Double> priceCache = createPriceCache();
-
-        // Calculate from current inventory
-        Map<ItemSignature, Long> items = virtualInventory.getConsolidatedItems();
-        double totalValue = 0.0;
-
-        for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
-            double itemPrice = findItemPrice(entry.getKey(), priceCache);
-            if (itemPrice > 0.0) {
-                totalValue += itemPrice * entry.getValue();
+        inventoryLock.lock();
+        try {
+            if (lootConfig == null) {
+                this.accumulatedSellValue = 0.0;
+                this.sellValueDirty = false;
+                return;
             }
-        }
 
-        this.accumulatedSellValue = totalValue;
-        this.sellValueDirty = false;
+            Map<String, Double> priceCache = createPriceCache();
+            Map<ItemSignature, Long> items = virtualInventory.getConsolidatedItems();
+            double totalValue = 0.0;
+            for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+                double itemPrice = findItemPrice(entry.getKey(), priceCache);
+                if (Double.isFinite(itemPrice) && itemPrice > 0.0) {
+                    totalValue = saturatingMoneyAdd(
+                            totalValue, saturatingMoneyMultiply(itemPrice, entry.getValue()));
+                }
+            }
+            this.accumulatedSellValue = totalValue;
+            this.sellValueDirty = false;
+        } finally {
+            inventoryLock.unlock();
+        }
     }
 
     /**
@@ -679,7 +679,7 @@ public class SpawnerData {
             if (price <= 0.0) {
                 price = lootItem.sellPrice();
             }
-            if (price > 0.0) {
+            if (Double.isFinite(price) && price > 0.0) {
                 ItemStack template = lootItem.createItemStack();
                 if (template != null) {
                     String key = createItemKey(template);
@@ -694,7 +694,7 @@ public class SpawnerData {
     /**
      * Finds item price using the cache
      */
-    private double findItemPrice(ItemSignature itemSignature, Map<String, Double> priceCache) {
+    public double findItemPrice(ItemSignature itemSignature, Map<String, Double> priceCache) {
         if (priceCache == null) {
             return 0.0;
         }
@@ -748,25 +748,26 @@ public class SpawnerData {
             return;
         }
 
-        // CRITICAL: Acquire inventoryLock to ensure VirtualInventory remains source of truth
+        Map<ItemSignature, Long> consolidated = new HashMap<>(items.size());
+        for (ItemStack item : items) {
+            if (item == null || item.getAmount() <= 0) {
+                continue;
+            }
+            consolidated.merge(VirtualInventory.getSignature(item), (long) item.getAmount(), SpawnerData::saturatingAdd);
+        }
+        addItemsAndUpdateSellValue(consolidated);
+    }
+
+    public void addItemsAndUpdateSellValue(Map<ItemSignature, Long> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+
         inventoryLock.lock();
         try {
-            // Consolidate items being added for efficient price lookup
-            Map<ItemSignature, Long> itemsToAdd = new java.util.HashMap<>();
-            for (ItemStack item : items) {
-                if (item == null || item.getAmount() <= 0) continue;
-                // Use cached signature to avoid excessive cloning
-                ItemSignature sig = VirtualInventory.getSignature(item);
-                itemsToAdd.merge(sig, (long) item.getAmount(), (a, b) -> a + b);
-            }
-
-            // Add to VirtualInventory (source of truth) - this operation is atomic within the lock
             virtualInventory.addItems(items);
-
-            // Update sell value atomically
             if (!sellValueDirty) {
-                Map<String, Double> priceCache = createPriceCache();
-                incrementSellValue(itemsToAdd, priceCache);
+                incrementSellValue(items, createPriceCache());
             }
         } finally {
             inventoryLock.unlock();
@@ -784,31 +785,56 @@ public class SpawnerData {
             return true;
         }
 
-        // CRITICAL: Acquire inventoryLock to ensure VirtualInventory remains source of truth
+        Map<ItemSignature, Long> consolidated = new HashMap<>(items.size());
+        for (ItemStack item : items) {
+            if (item == null || item.getAmount() <= 0) {
+                continue;
+            }
+            consolidated.merge(VirtualInventory.getSignature(item), (long) item.getAmount(), SpawnerData::saturatingAdd);
+        }
+        return removeItemsAndUpdateSellValue(consolidated);
+    }
+
+    public boolean removeItemsAndUpdateSellValue(Map<ItemSignature, Long> items) {
+        if (items == null || items.isEmpty()) {
+            return true;
+        }
+
         inventoryLock.lock();
         try {
-            // Remove from VirtualInventory (source of truth) - atomic operation within lock
             boolean removed = virtualInventory.removeItems(items);
-
-            // Update sell value atomically if removal was successful
             if (removed && !sellValueDirty) {
-                Map<String, Double> priceCache = createPriceCache();
-                decrementSellValue(items, priceCache);
+                decrementSellValue(items, createPriceCache());
             }
-
             return removed;
         } finally {
             inventoryLock.unlock();
         }
     }
 
-    public synchronized void storePreGeneratedLoot(List<ItemStack> items, long experience) {
-        this.preGeneratedItems = items;
+    public synchronized void storePreGeneratedLoot(Map<ItemSignature, Long> items, long experience) {
+        this.preGeneratedItems = items == null ? null : new HashMap<>(items);
         this.preGeneratedExperience = experience;
     }
 
-    public synchronized List<ItemStack> getAndClearPreGeneratedItems() {
-        List<ItemStack> items = preGeneratedItems;
+    public synchronized void restorePreGeneratedLoot(Map<ItemSignature, Long> items, long experience) {
+        if (items != null && !items.isEmpty()) {
+            if (preGeneratedItems == null) {
+                preGeneratedItems = new HashMap<>();
+            }
+            for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null && entry.getValue() > 0L) {
+                    preGeneratedItems.merge(
+                            entry.getKey(), entry.getValue(), SpawnerData::saturatingAdd);
+                }
+            }
+        }
+        preGeneratedExperience = saturatingAdd(
+                Math.max(0L, preGeneratedExperience), Math.max(0L, experience));
+    }
+
+    public synchronized Map<ItemSignature, Long> getAndClearPreGeneratedItems() {
+        Map<ItemSignature, Long> items = preGeneratedItems;
         preGeneratedItems = null;
         return items;
     }
@@ -835,6 +861,23 @@ public class SpawnerData {
         preGeneratedItems = null;
         preGeneratedExperience = 0;
         isPreGenerating = false;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        return right > 0L && left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
+    }
+
+    private static double saturatingMoneyAdd(double left, double right) {
+        if (!Double.isFinite(left) || !Double.isFinite(right)
+                || left > Double.MAX_VALUE - right) {
+            return Double.MAX_VALUE;
+        }
+        return left + right;
+    }
+
+    private static double saturatingMoneyMultiply(double price, long amount) {
+        double value = price * amount;
+        return Double.isFinite(value) ? value : Double.MAX_VALUE;
     }
 
     /**

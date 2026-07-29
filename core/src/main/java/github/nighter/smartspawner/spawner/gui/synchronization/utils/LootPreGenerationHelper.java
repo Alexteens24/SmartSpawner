@@ -2,11 +2,11 @@ package github.nighter.smartspawner.spawner.gui.synchronization.utils;
 
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.Scheduler;
+import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import org.bukkit.Location;
-import org.bukkit.inventory.ItemStack;
 
-import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -61,19 +61,22 @@ public final class LootPreGenerationHelper {
         spawner.setPreGenerating(true);
 
         Location spawnerLocation = spawner.getSpawnerLocation();
-        if (spawnerLocation != null) {
-            Scheduler.runLocationTask(spawnerLocation, () -> {
-                if (!spawner.getSpawnerActive() || spawner.getSpawnerStop().get()) {
-                    spawner.setPreGenerating(false);
-                    return;
-                }
-
-                plugin.getSpawnerLootGenerator().preGenerateLoot(spawner, (items, experience) -> {
-                    spawner.storePreGeneratedLoot(items, experience);
-                    spawner.setPreGenerating(false);
-                });
-            });
+        if (spawnerLocation == null) {
+            spawner.setPreGenerating(false);
+            return;
         }
+
+        Scheduler.runLocationTask(spawnerLocation, () -> {
+            if (!spawner.getSpawnerActive() || spawner.getSpawnerStop().get()) {
+                spawner.setPreGenerating(false);
+                return;
+            }
+
+            plugin.getSpawnerLootGenerator().preGenerateLoot(spawner, (items, experience) -> {
+                spawner.storePreGeneratedLoot(items, experience);
+                spawner.setPreGenerating(false);
+            });
+        });
     }
 
     /**
@@ -107,7 +110,7 @@ public final class LootPreGenerationHelper {
                         Location spawnerLocation = spawner.getSpawnerLocation();
                         if (spawnerLocation != null) {
                             // Calculate when the loot should have spawned (for timer accuracy)
-                            final long scheduledSpawnTime = lastSpawnTime + cachedDelay;
+                            final long scheduledSpawnTime = saturatingAdd(lastSpawnTime, cachedDelay);
 
                             Scheduler.runLocationTask(spawnerLocation, () -> {
                                 if (!spawner.getSpawnerActive() || spawner.getSpawnerStop().get()) {
@@ -116,7 +119,7 @@ public final class LootPreGenerationHelper {
                                 }
 
                                 if (spawner.hasPreGeneratedLoot()) {
-                                    List<ItemStack> items = spawner.getAndClearPreGeneratedItems();
+                                    Map<ItemSignature, Long> items = spawner.getAndClearPreGeneratedItems();
                                     long exp = spawner.getAndClearPreGeneratedExperience();
 
                                     // Add the loot with scheduled spawn time for accurate timer reset
@@ -132,5 +135,9 @@ public final class LootPreGenerationHelper {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        return right > 0L && left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 }
