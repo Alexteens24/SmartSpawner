@@ -66,7 +66,8 @@ public class SpawnerSellConfirmUI {
         }
 
         // Check if there are items to sell before opening
-        if (spawner.getVirtualInventory().getUsedSlots() == 0) {
+        if (spawner.getVirtualInventory().getUsedSlots() == 0
+                && (!collectExp || spawner.getSpawnerExp() <= 0L)) {
             plugin.getMessageService().sendMessage(player, "spawner_storage_empty");
             if (sourceButton != null) {
                 plugin.getGuiButtonInteractionService().playFailSound(
@@ -82,18 +83,10 @@ public class SpawnerSellConfirmUI {
                 return;
             }
 
-            // Collect exp silently so we can send a single combined sell+exp message
-            long expCollected = 0;
-            long expMending = 0;
-            if (collectExp) {
-                long[] expData = plugin.getSpawnerMenuAction().collectExpSilently(player, spawner);
-                expCollected = expData[0];
-                expMending = expData[1];
-            }
-
             player.closeInventory();
-            Runnable onComplete = sourceButton == null ? null : () -> {
-                if (spawner.getVirtualInventory().getUsedSlots() == 0) {
+            java.util.function.Consumer<github.nighter.smartspawner.spawner.sell.SpawnerSellManager.SellOutcome>
+                    onComplete = sourceButton == null ? null : outcome -> {
+                if (outcome.isSuccessful()) {
                     plugin.getGuiButtonInteractionService().playSuccessSound(
                             player, sourceButton, sourceClickType);
                 } else {
@@ -101,8 +94,7 @@ public class SpawnerSellConfirmUI {
                             player, sourceButton, sourceClickType);
                 }
             };
-            plugin.getSpawnerSellManager().sellAllItems(
-                    player, spawner, onComplete, expCollected, expMending);
+            plugin.getSpawnerSellManager().sellAllItems(player, spawner, collectExp, onComplete);
             return;
         }
 
@@ -243,7 +235,7 @@ public class SpawnerSellConfirmUI {
         Map<Material, Long> materialAmountMap = new HashMap<>();
         for (Map.Entry<ItemSignature, Long> entry : storedItems.entrySet()) {
             Material material = entry.getKey().getMaterial();
-            materialAmountMap.merge(material, entry.getValue(), Long::sum);
+            materialAmountMap.merge(material, entry.getValue(), SpawnerSellConfirmUI::saturatingAdd);
         }
 
         EntityType entityType = spawner.getEntityType();
@@ -277,6 +269,10 @@ public class SpawnerSellConfirmUI {
             }
         }
         return components;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        return right > 0L && left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 
     private Map<String, String> createPlaceholders(SpawnerData spawner, boolean collectExp) {

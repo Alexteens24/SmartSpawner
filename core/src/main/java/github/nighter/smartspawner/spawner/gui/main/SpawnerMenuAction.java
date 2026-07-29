@@ -558,7 +558,7 @@ public class SpawnerMenuAction implements Listener {
         return new long[]{initialExp, expUsedForMending};
     }
 
-    private void sendExpCollectionMessage(Player player, long totalExp, long mendingExp) {
+    public void sendExpCollectionMessage(Player player, long totalExp, long mendingExp) {
         Map<String, String> placeholders = new HashMap<>();
 
         if (mendingExp > 0) {

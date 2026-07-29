@@ -94,9 +94,7 @@ public class SpawnerAuditListener implements Listener {
     
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSpawnerSell(SpawnerSellEvent event) {
-        int itemsSold = event.getItems().stream()
-                .mapToInt(ItemStack::getAmount)
-                .sum();
+        long itemsSold = event.getTotalItemCount();
         
         logger.log(new SpawnerLogEntry.Builder(SpawnerEventType.SPAWNER_SELL_ALL)
                 .player(event.getPlayer().getName(), event.getPlayer().getUniqueId())

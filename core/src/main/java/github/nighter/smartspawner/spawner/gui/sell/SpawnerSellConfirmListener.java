@@ -179,22 +179,9 @@ public class SpawnerSellConfirmListener implements Listener {
             return;
         }
 
-        // Collect exp silently so we can send a single combined sell+exp message
-        long expCollected = 0;
-        long expMending = 0;
-        if (collectExp) {
-            long[] expData = plugin.getSpawnerMenuAction().collectExpSilently(player, spawner);
-            expCollected = expData[0];
-            expMending = expData[1];
-        }
-
-        // Callback runs on the spawner's region/main thread after the sell fully completes.
-        // Defers the GUI reopen until the inventory is actually emptied, closing the race
-        // window where a storage GUI could be reopened with stale (pre-removal) items.
-        final long finalExpCollected = expCollected;
-        final long finalExpMending = expMending;
-        Runnable onComplete = () -> {
-            if (spawner.getVirtualInventory().getUsedSlots() == 0) {
+        java.util.function.Consumer<github.nighter.smartspawner.spawner.sell.SpawnerSellManager.SellOutcome>
+                onComplete = outcome -> {
+            if (outcome.isSuccessful()) {
                 plugin.getGuiButtonInteractionService().playSuccessSound(
                         player, button, clickType);
             } else {
@@ -209,8 +196,7 @@ public class SpawnerSellConfirmListener implements Listener {
             Scheduler.runEntityTask(player, () -> reopenPreviousGui(player, spawner, previousGui));
         };
 
-        plugin.getSpawnerSellManager().sellAllItems(
-                player, spawner, onComplete, finalExpCollected, finalExpMending);
+        plugin.getSpawnerSellManager().sellAllItems(player, spawner, collectExp, onComplete);
     }
 
     private String getClickTypeString(org.bukkit.event.inventory.ClickType clickType) {

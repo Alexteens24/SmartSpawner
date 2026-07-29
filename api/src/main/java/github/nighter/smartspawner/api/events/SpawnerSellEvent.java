@@ -8,7 +8,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.Cancellable;
 import org.bukkit.event.Event;
 import org.bukkit.event.HandlerList;
-import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -25,7 +24,7 @@ public class SpawnerSellEvent extends Event implements Cancellable {
 
     private final Player player;
     private final Location location;
-    private final List<ItemStack> items;
+    private final List<SpawnerSoldItem> soldItems;
     private final EntityType entityType;
     private double moneyAmount;
     private boolean cancelled = false;
@@ -35,11 +34,11 @@ public class SpawnerSellEvent extends Event implements Cancellable {
      *
      * @param player the player selling the items
      * @param location the location of the spawner
-     * @param items the items being sold
+     * @param soldItems the exact item templates and quantities being sold
      * @param moneyAmount the amount of money to be given
      */
-    public SpawnerSellEvent(Player player, Location location, List<ItemStack> items, double moneyAmount) {
-        this(player, location, items, moneyAmount, null);
+    public SpawnerSellEvent(Player player, Location location, List<SpawnerSoldItem> soldItems, double moneyAmount) {
+        this(player, location, soldItems, moneyAmount, null);
     }
 
     /**
@@ -47,17 +46,29 @@ public class SpawnerSellEvent extends Event implements Cancellable {
      *
      * @param player the player selling the items
      * @param location the location of the spawner
-     * @param items the items being sold
+     * @param soldItems the exact item templates and quantities being sold
      * @param moneyAmount the amount of money to be given
      * @param entityType the spawned entity type of the selling spawner
      */
-    public SpawnerSellEvent(Player player, Location location, List<ItemStack> items, double moneyAmount,
+    public SpawnerSellEvent(Player player, Location location, List<SpawnerSoldItem> soldItems, double moneyAmount,
                             @Nullable EntityType entityType) {
         this.player = player;
         this.location = location;
-        this.items = items;
+        this.soldItems = List.copyOf(soldItems);
         this.moneyAmount = moneyAmount;
         this.entityType = entityType;
+    }
+
+    public long getTotalItemCount() {
+        long total = 0L;
+        for (SpawnerSoldItem soldItem : soldItems) {
+            long amount = soldItem.getAmount();
+            if (total > Long.MAX_VALUE - amount) {
+                return Long.MAX_VALUE;
+            }
+            total += amount;
+        }
+        return total;
     }
 
     @Override
