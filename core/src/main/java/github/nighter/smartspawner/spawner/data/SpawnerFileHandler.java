@@ -2,11 +2,12 @@ package github.nighter.smartspawner.spawner.data;
 
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.spawner.data.storage.SpawnerStorage;
+import github.nighter.smartspawner.spawner.data.legacy.LegacyInventoryCodec;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerInventoryCodec;
 import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import github.nighter.smartspawner.spawner.properties.VirtualInventory;
 import github.nighter.smartspawner.Scheduler;
-import github.nighter.smartspawner.spawner.utils.ItemStackSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -130,7 +131,9 @@ public class SpawnerFileHandler implements SpawnerStorage {
                     }
 
                     if (!batch.isEmpty()) {
-                        saveSpawnerBatch(batch);
+                        if (!saveSpawnerBatch(batch)) {
+                            dirtySpawners.addAll(batch.keySet());
+                        }
                     }
                 }
 
@@ -234,9 +237,16 @@ public class SpawnerFileHandler implements SpawnerStorage {
 
                 VirtualInventory virtualInv = spawner.getVirtualInventory();
                 if (virtualInv != null) {
-                    Map<ItemSignature, Long> items = virtualInv.getConsolidatedItems();
-                    List<String> serializedItems = ItemStackSerializer.serializeInventory(items);
-                    spawnerData.set(path + ".inventory", serializedItems);
+                    Map<ItemSignature, Long> items;
+                    spawner.getInventoryLock().lock();
+                    try {
+                        items = virtualInv.getConsolidatedItems();
+                    } finally {
+                        spawner.getInventoryLock().unlock();
+                    }
+                    String encoded = SpawnerInventoryCodec.encodeToString(items);
+                    spawnerData.set(path + ".inventory",
+                            encoded == null ? Collections.emptyList() : encoded);
                 }
             }
 
@@ -440,34 +450,41 @@ public class SpawnerFileHandler implements SpawnerStorage {
             }
         }
 
-        List<String> inventoryData = spawnerData.getStringList(path + ".inventory");
         VirtualInventory virtualInv = new VirtualInventory(spawner.getMaxSpawnerLootSlots());
-
-        if (inventoryData != null && !inventoryData.isEmpty()) {
-            try {
-                Map<ItemStack, Integer> items = ItemStackSerializer.deserializeInventory(inventoryData);
-                for (Map.Entry<ItemStack, Integer> entry : items.entrySet()) {
-                    ItemStack item = entry.getKey();
-                    int amount = entry.getValue();
-
-                    if (item != null && amount > 0) {
-                        while (amount > 0) {
-                            int batchSize = Math.min(amount, item.getMaxStackSize());
-                            ItemStack batch = item.clone();
-                            batch.setAmount(batchSize);
-                            virtualInv.addItems(Collections.singletonList(batch));
-                            amount -= batchSize;
-                        }
+        Object rawInventory = spawnerData.get(path + ".inventory");
+        boolean legacyInventory = false;
+        try {
+            Map<ItemStack, Long> items;
+            if (rawInventory instanceof String encoded && !encoded.isEmpty()) {
+                items = SpawnerInventoryCodec.decodeString(encoded);
+            } else if (rawInventory instanceof List<?> rawList && !rawList.isEmpty()) {
+                List<String> entries = new ArrayList<>(rawList.size());
+                for (Object value : rawList) {
+                    if (!(value instanceof String entry)) {
+                        throw new IOException("Legacy inventory contains a non-string entry");
                     }
+                    entries.add(entry);
                 }
-            } catch (Exception e) {
-                logger.warning("Error loading inventory for spawner " + spawnerId);
-                e.printStackTrace();
+                items = LegacyInventoryCodec.deserialize(entries);
+                legacyInventory = true;
+            } else {
+                items = Map.of();
             }
+            for (Map.Entry<ItemStack, Long> entry : items.entrySet()) {
+                virtualInv.addItem(entry.getKey(), entry.getValue());
+            }
+        } catch (Exception e) {
+            logger.log(java.util.logging.Level.SEVERE,
+                    "Refusing to load spawner " + spawnerId
+                            + " because its inventory could not be decoded", e);
+            return null;
         }
 
         spawner.setVirtualInventory(virtualInv);
         spawner.markSellValueDirty();
+        if (legacyInventory) {
+            dirtySpawners.add(spawnerId);
+        }
 
         // Load last interacted player
         String lastInteractedPlayer = spawnerData.getString(path + ".lastInteractedPlayer");

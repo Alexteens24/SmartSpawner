@@ -3,7 +3,10 @@ package github.nighter.smartspawner.spawner.data.database;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import github.nighter.smartspawner.SmartSpawner;
+import github.nighter.smartspawner.spawner.data.legacy.LegacyInventoryCodec;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerInventoryCodec;
 import github.nighter.smartspawner.spawner.data.storage.StorageMode;
+import org.bukkit.inventory.ItemStack;
 
 import java.io.File;
 import java.sql.Connection;
@@ -13,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -85,6 +89,7 @@ public class DatabaseManager {
 
                 -- Inventory (JSON blob)
                 inventory_data MEDIUMTEXT DEFAULT NULL,
+                total_items BIGINT NOT NULL DEFAULT 0,
 
                 -- Timestamps
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -139,6 +144,7 @@ public class DatabaseManager {
 
                 -- Inventory (JSON blob)
                 inventory_data TEXT DEFAULT NULL,
+                total_items BIGINT NOT NULL DEFAULT 0,
 
                 -- Timestamps
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -159,7 +165,7 @@ public class DatabaseManager {
     private static final String SCHEMA_META_TABLE = "smartspawner_meta";
     private static final String SCHEMA_VERSION_KEY = "schema_version";
     private static final int LEGACY_SCHEMA_VERSION = 1;
-    private static final int CURRENT_SCHEMA_VERSION = 3;
+    private static final int CURRENT_SCHEMA_VERSION = 4;
 
     private static final String CREATE_META_TABLE_MYSQL = """
             CREATE TABLE IF NOT EXISTS smartspawner_meta (
@@ -364,7 +370,10 @@ public class DatabaseManager {
         if (xpColumnsRequireMigration()) {
             return LEGACY_SCHEMA_VERSION;
         }
-        return lifetimeColumnsExist() ? CURRENT_SCHEMA_VERSION : 2;
+        if (!lifetimeColumnsExist()) {
+            return 2;
+        }
+        return totalItemsColumnExists() ? CURRENT_SCHEMA_VERSION : 3;
     }
 
     private void setSchemaVersion(int version) throws SQLException {
@@ -389,7 +398,108 @@ public class DatabaseManager {
             addLifetimeColumnsIfNeeded();
             return;
         }
+        if (targetVersion == 4) {
+            addTotalItemsColumnAndBackfill();
+            return;
+        }
         throw new SQLException("No database migration handler found for schema version: " + targetVersion);
+    }
+
+    private boolean totalItemsColumnExists() throws SQLException {
+        if (storageMode == StorageMode.SQLITE) {
+            try (Connection conn = getConnection();
+                 Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("PRAGMA table_info(smart_spawners)")) {
+                while (rs.next()) {
+                    if ("total_items".equalsIgnoreCase(rs.getString("name"))) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        String sql = """
+                SELECT COUNT(*) AS count
+                FROM information_schema.columns
+                WHERE table_schema = ?
+                  AND table_name = 'smart_spawners'
+                  AND column_name = 'total_items'
+                """;
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, database);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() && rs.getInt("count") > 0;
+            }
+        }
+    }
+
+    private void addTotalItemsColumnAndBackfill() throws SQLException {
+        if (!totalItemsColumnExists()) {
+            try (Connection conn = getConnection();
+                 Statement stmt = conn.createStatement()) {
+                stmt.execute("ALTER TABLE smart_spawners "
+                        + "ADD COLUMN total_items BIGINT NOT NULL DEFAULT 0");
+            }
+        }
+
+        try (Connection conn = getConnection();
+             PreparedStatement select = conn.prepareStatement(
+                     "SELECT id, spawner_id, inventory_data FROM smart_spawners");
+             PreparedStatement update = conn.prepareStatement(
+                     "UPDATE smart_spawners SET total_items = ? WHERE id = ?")) {
+            conn.setAutoCommit(false);
+            int pending = 0;
+            try (ResultSet rs = select.executeQuery()) {
+                while (rs.next()) {
+                    String encoded = rs.getString("inventory_data");
+                    long total;
+                    try {
+                        Map<ItemStack, Long> items = encoded == null || encoded.isEmpty()
+                                ? Map.of()
+                                : encoded.startsWith(SpawnerInventoryCodec.PREFIX)
+                                ? SpawnerInventoryCodec.decodeString(encoded)
+                                : LegacyInventoryCodec.deserialize(
+                                        LegacyInventoryCodec.parseJsonArray(encoded));
+                        total = totalItems(items);
+                    } catch (Exception failure) {
+                        logger.log(Level.WARNING,
+                                "Could not backfill total_items for spawner "
+                                        + rs.getString("spawner_id")
+                                        + "; inventory_data was left unchanged", failure);
+                        continue;
+                    }
+
+                    update.setLong(1, total);
+                    update.setLong(2, rs.getLong("id"));
+                    update.addBatch();
+                    if (++pending >= 250) {
+                        update.executeBatch();
+                        conn.commit();
+                        pending = 0;
+                    }
+                }
+            }
+            if (pending > 0) {
+                update.executeBatch();
+                conn.commit();
+            }
+        }
+    }
+
+    private long totalItems(Map<ItemStack, Long> items) {
+        long total = 0L;
+        for (Long amount : items.values()) {
+            if (amount == null || amount <= 0L) {
+                continue;
+            }
+            if (total > Long.MAX_VALUE - amount) {
+                return Long.MAX_VALUE;
+            }
+            total += amount;
+        }
+        return total;
     }
 
     private boolean lifetimeColumnsExist() throws SQLException {

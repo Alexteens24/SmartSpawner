@@ -3,12 +3,13 @@ package github.nighter.smartspawner.spawner.data.database;
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.Scheduler;
 import github.nighter.smartspawner.commands.list.gui.CrossServerSpawnerData;
+import github.nighter.smartspawner.spawner.data.legacy.LegacyInventoryCodec;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerInventoryCodec;
 import github.nighter.smartspawner.spawner.data.storage.SpawnerStorage;
 import github.nighter.smartspawner.spawner.data.storage.StorageMode;
 import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import github.nighter.smartspawner.spawner.properties.VirtualInventory;
-import github.nighter.smartspawner.spawner.utils.ItemStackSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -49,7 +50,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                    spawner_exp, spawner_active, spawner_range, spawner_stop, spawn_delay,
                    max_spawner_loot_slots, max_stored_exp, min_mobs, max_mobs, stack_size,
                    max_stack_size, last_spawn_time, is_at_capacity, last_interacted_player,
-                   preferred_sort_item, filtered_items, inventory_data,
+                   preferred_sort_item, filtered_items, inventory_data, total_items,
                    lifetime_expires_at, lifetime_expired
             FROM smart_spawners WHERE server_name = ?
             """;
@@ -59,7 +60,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                    spawner_exp, spawner_active, spawner_range, spawner_stop, spawn_delay,
                    max_spawner_loot_slots, max_stored_exp, min_mobs, max_mobs, stack_size,
                    max_stack_size, last_spawn_time, is_at_capacity, last_interacted_player,
-                   preferred_sort_item, filtered_items, inventory_data,
+                   preferred_sort_item, filtered_items, inventory_data, total_items,
                    lifetime_expires_at, lifetime_expired
             FROM smart_spawners WHERE server_name = ? AND spawner_id = ?
             """;
@@ -77,9 +78,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data,
+                preferred_sort_item, filtered_items, inventory_data, total_items,
                 lifetime_expires_at, lifetime_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 world_name = VALUES(world_name),
                 loc_x = VALUES(loc_x),
@@ -104,6 +105,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 preferred_sort_item = VALUES(preferred_sort_item),
                 filtered_items = VALUES(filtered_items),
                 inventory_data = VALUES(inventory_data),
+                total_items = VALUES(total_items),
                 lifetime_expires_at = VALUES(lifetime_expires_at),
                 lifetime_expired = VALUES(lifetime_expired)
             """;
@@ -116,9 +118,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data,
+                preferred_sort_item, filtered_items, inventory_data, total_items,
                 lifetime_expires_at, lifetime_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_name, spawner_id) DO UPDATE SET
                 world_name = excluded.world_name,
                 loc_x = excluded.loc_x,
@@ -143,6 +145,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 preferred_sort_item = excluded.preferred_sort_item,
                 filtered_items = excluded.filtered_items,
                 inventory_data = excluded.inventory_data,
+                total_items = excluded.total_items,
                 lifetime_expires_at = excluded.lifetime_expires_at,
                 lifetime_expired = excluded.lifetime_expired
             """;
@@ -333,9 +336,23 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         stmt.setString(22, spawner.getLastInteractedPlayer());
         stmt.setString(23, spawner.getPreferredSortItem() != null ? spawner.getPreferredSortItem().name() : null);
         stmt.setString(24, serializeFilteredItems(spawner.getFilteredItems()));
-        stmt.setString(25, serializeInventory(spawner.getVirtualInventory()));
-        stmt.setLong(26, spawner.isTimed() ? spawner.getLifetimeExpiresAt() : -1L);
-        stmt.setBoolean(27, spawner.isExpired());
+
+        Map<ItemSignature, Long> inventorySnapshot;
+        spawner.getInventoryLock().lock();
+        try {
+            inventorySnapshot = spawner.getVirtualInventory().getConsolidatedItems();
+        } finally {
+            spawner.getInventoryLock().unlock();
+        }
+        try {
+            stmt.setString(25, SpawnerInventoryCodec.encodeToString(inventorySnapshot));
+        } catch (java.io.IOException encodeFailure) {
+            throw new SQLException("Could not encode inventory for spawner "
+                    + spawner.getSpawnerId(), encodeFailure);
+        }
+        stmt.setLong(26, SpawnerInventoryCodec.totalItems(inventorySnapshot));
+        stmt.setLong(27, spawner.isTimed() ? spawner.getLifetimeExpiresAt() : -1L);
+        stmt.setBoolean(28, spawner.isExpired());
     }
 
     @Override
@@ -515,9 +532,23 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         VirtualInventory virtualInv = new VirtualInventory(spawner.getMaxSpawnerLootSlots());
         if (inventoryData != null && !inventoryData.isEmpty()) {
             try {
-                loadInventoryFromJson(inventoryData, virtualInv);
+                Map<ItemStack, Long> items;
+                boolean legacy = !inventoryData.startsWith(SpawnerInventoryCodec.PREFIX);
+                if (legacy) {
+                    items = LegacyInventoryCodec.deserialize(
+                            LegacyInventoryCodec.parseJsonArray(inventoryData));
+                } else {
+                    items = SpawnerInventoryCodec.decodeString(inventoryData);
+                }
+                for (Map.Entry<ItemStack, Long> entry : items.entrySet()) {
+                    virtualInv.addItem(entry.getKey(), entry.getValue());
+                }
+                if (legacy) {
+                    dirtySpawners.add(spawnerId);
+                }
             } catch (Exception e) {
-                logger.warning("Error loading inventory for spawner " + spawnerId + ": " + e.getMessage());
+                throw new SQLException("Refusing to load spawner " + spawnerId
+                        + " because its inventory could not be decoded", e);
             }
         }
         spawner.setVirtualInventory(virtualInv);
@@ -604,109 +635,6 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
             } catch (IllegalArgumentException e) {
                 logger.warning("Invalid material in filtered items: " + materialName);
             }
-        }
-    }
-
-    private String serializeInventory(VirtualInventory virtualInv) {
-        if (virtualInv == null) {
-            return null;
-        }
-
-        Map<ItemSignature, Long> items = virtualInv.getConsolidatedItems();
-        if (items.isEmpty()) {
-            return null;
-        }
-
-        // Use existing ItemStackSerializer format, then join with a delimiter
-        List<String> serializedItems = ItemStackSerializer.serializeInventory(items);
-        if (serializedItems.isEmpty()) {
-            return null;
-        }
-
-        // Use a JSON-like array format that's easy to parse
-        // Format: ["item1:count","item2;damage:count:count",...]
-        StringBuilder sb = new StringBuilder();
-        sb.append("[");
-        for (int i = 0; i < serializedItems.size(); i++) {
-            if (i > 0) sb.append(",");
-            // Escape any quotes in the string and wrap in quotes
-            sb.append("\"").append(serializedItems.get(i).replace("\"", "\\\"")).append("\"");
-        }
-        sb.append("]");
-        return sb.toString();
-    }
-
-    private void loadInventoryFromJson(String jsonData, VirtualInventory virtualInv) {
-        if (jsonData == null || jsonData.isEmpty()) return;
-
-        // Parse our simple JSON array format
-        // Format: ["item1:count","item2;damage:count:count",...]
-        if (!jsonData.startsWith("[") || !jsonData.endsWith("]")) {
-            logger.warning("Invalid inventory JSON format: " + jsonData);
-            return;
-        }
-
-        String content = jsonData.substring(1, jsonData.length() - 1);
-        if (content.isEmpty()) return;
-
-        List<String> items = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean inQuotes = false;
-        boolean escaped = false;
-
-        for (char c : content.toCharArray()) {
-            if (escaped) {
-                current.append(c);
-                escaped = false;
-                continue;
-            }
-
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-
-            if (c == '"') {
-                inQuotes = !inQuotes;
-                continue;
-            }
-
-            if (c == ',' && !inQuotes) {
-                if (current.length() > 0) {
-                    items.add(current.toString());
-                    current = new StringBuilder();
-                }
-                continue;
-            }
-
-            current.append(c);
-        }
-
-        if (current.length() > 0) {
-            items.add(current.toString());
-        }
-
-        if (items.isEmpty()) return;
-
-        // Use existing ItemStackSerializer to deserialize
-        try {
-            Map<ItemStack, Integer> deserializedItems = ItemStackSerializer.deserializeInventory(items);
-            for (Map.Entry<ItemStack, Integer> entry : deserializedItems.entrySet()) {
-                ItemStack item = entry.getKey();
-                int amount = entry.getValue();
-
-                if (item != null && amount > 0) {
-                    while (amount > 0) {
-                        int batchSize = Math.min(amount, item.getMaxStackSize());
-                        ItemStack batch = item.clone();
-                        batch.setAmount(batchSize);
-                        virtualInv.addItems(Collections.singletonList(batch));
-                        amount -= batchSize;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            logger.warning("Error deserializing inventory data: " + e.getMessage());
         }
     }
 
@@ -826,7 +754,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
             String sql = """
                 SELECT spawner_id, server_name, world_name, loc_x, loc_y, loc_z,
                        entity_type, stack_size, spawner_stop, last_interacted_player,
-                       spawner_exp, inventory_data
+                       spawner_exp, total_items
                 FROM smart_spawners
                 WHERE server_name = ? AND world_name = ?
                 ORDER BY stack_size DESC
@@ -859,8 +787,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                         String lastPlayer = rs.getString("last_interacted_player");
                         long storedExp = rs.getLong("spawner_exp");
 
-                        // Estimate total items from inventory data
-                        long totalItems = estimateItemCount(rs.getString("inventory_data"));
+                        long totalItems = rs.getLong("total_items");
 
                         spawners.add(new CrossServerSpawnerData(
                                 spawnerId, server, world, x, y, z,
@@ -926,7 +853,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
             StringBuilder sql = new StringBuilder("""
                 SELECT spawner_id, server_name, world_name, loc_x, loc_y, loc_z,
                        entity_type, stack_size, spawner_stop, last_interacted_player,
-                       spawner_exp, inventory_data
+                       spawner_exp, total_items
                 FROM smart_spawners
                 WHERE server_name = ? AND world_name = ?
                 """);
@@ -973,7 +900,7 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                         boolean active = !rs.getBoolean("spawner_stop");
                         String lastPlayer = rs.getString("last_interacted_player");
                         long storedExp = rs.getLong("spawner_exp");
-                        long totalItems = estimateItemCount(rs.getString("inventory_data"));
+                        long totalItems = rs.getLong("total_items");
 
                         spawners.add(new CrossServerSpawnerData(
                                 spawnerId, server, world, x, y, z,
@@ -991,28 +918,4 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         });
     }
 
-    /**
-     * Estimate total item count from inventory JSON data.
-     */
-    private long estimateItemCount(String inventoryData) {
-        if (inventoryData == null || inventoryData.isEmpty()) {
-            return 0;
-        }
-
-        long total = 0;
-        // Simple regex to find numbers after colons (item counts)
-        // Format: ["ITEM:count","ITEM:count",...]
-        try {
-            String[] parts = inventoryData.split(":");
-            for (int i = 1; i < parts.length; i++) {
-                String numPart = parts[i].replaceAll("[^0-9]", " ").trim().split(" ")[0];
-                if (!numPart.isEmpty()) {
-                    total += Long.parseLong(numPart);
-                }
-            }
-        } catch (Exception e) {
-            // Ignore parsing errors
-        }
-        return total;
-    }
 }

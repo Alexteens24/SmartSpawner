@@ -1,11 +1,15 @@
 package github.nighter.smartspawner.spawner.data.database;
 
 import github.nighter.smartspawner.SmartSpawner;
+import github.nighter.smartspawner.spawner.data.legacy.LegacyInventoryCodec;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerInventoryCodec;
 import github.nighter.smartspawner.spawner.data.storage.StorageMode;
+import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.EntityType;
+import org.bukkit.inventory.ItemStack;
 import java.io.File;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -36,9 +40,9 @@ public class YamlToDatabaseMigration {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data,
+                preferred_sort_item, filtered_items, inventory_data, total_items,
                 lifetime_expires_at, lifetime_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 world_name = VALUES(world_name),
                 loc_x = VALUES(loc_x),
@@ -63,6 +67,7 @@ public class YamlToDatabaseMigration {
                 preferred_sort_item = VALUES(preferred_sort_item),
                 filtered_items = VALUES(filtered_items),
                 inventory_data = VALUES(inventory_data),
+                total_items = VALUES(total_items),
                 lifetime_expires_at = VALUES(lifetime_expires_at),
                 lifetime_expired = VALUES(lifetime_expired)
             """;
@@ -75,9 +80,9 @@ public class YamlToDatabaseMigration {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data,
+                preferred_sort_item, filtered_items, inventory_data, total_items,
                 lifetime_expires_at, lifetime_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_name, spawner_id) DO UPDATE SET
                 world_name = excluded.world_name,
                 loc_x = excluded.loc_x,
@@ -102,6 +107,7 @@ public class YamlToDatabaseMigration {
                 preferred_sort_item = excluded.preferred_sort_item,
                 filtered_items = excluded.filtered_items,
                 inventory_data = excluded.inventory_data,
+                total_items = excluded.total_items,
                 lifetime_expires_at = excluded.lifetime_expires_at,
                 lifetime_expired = excluded.lifetime_expired
             """;
@@ -271,13 +277,13 @@ public class YamlToDatabaseMigration {
 
         // Parse settings string
         String settingsString = yamlData.getString(path + ".settings");
-        int spawnerExp = 0;
+        long spawnerExp = 0;
         boolean spawnerActive = true;
         int spawnerRange = 16;
         boolean spawnerStop = true;
         long spawnDelay = 500;
         int maxSpawnerLootSlots = 45;
-        int maxStoredExp = 1000;
+        long maxStoredExp = 1000;
         int minMobs = 1;
         int maxMobs = 4;
         int stackSize = 1;
@@ -291,13 +297,13 @@ public class YamlToDatabaseMigration {
 
             try {
                 if (version >= 3 && settings.length >= 13) {
-                    spawnerExp = Integer.parseInt(settings[0]);
+                    spawnerExp = Long.parseLong(settings[0]);
                     spawnerActive = Boolean.parseBoolean(settings[1]);
                     spawnerRange = Integer.parseInt(settings[2]);
                     spawnerStop = Boolean.parseBoolean(settings[3]);
                     spawnDelay = Long.parseLong(settings[4]);
                     maxSpawnerLootSlots = Integer.parseInt(settings[5]);
-                    maxStoredExp = Integer.parseInt(settings[6]);
+                    maxStoredExp = Long.parseLong(settings[6]);
                     minMobs = Integer.parseInt(settings[7]);
                     maxMobs = Integer.parseInt(settings[8]);
                     stackSize = Integer.parseInt(settings[9]);
@@ -305,13 +311,13 @@ public class YamlToDatabaseMigration {
                     lastSpawnTime = Long.parseLong(settings[11]);
                     isAtCapacity = Boolean.parseBoolean(settings[12]);
                 } else if (settings.length >= 11) {
-                    spawnerExp = Integer.parseInt(settings[0]);
+                    spawnerExp = Long.parseLong(settings[0]);
                     spawnerActive = Boolean.parseBoolean(settings[1]);
                     spawnerRange = Integer.parseInt(settings[2]);
                     spawnerStop = Boolean.parseBoolean(settings[3]);
                     spawnDelay = Long.parseLong(settings[4]);
                     maxSpawnerLootSlots = Integer.parseInt(settings[5]);
-                    maxStoredExp = Integer.parseInt(settings[6]);
+                    maxStoredExp = Long.parseLong(settings[6]);
                     minMobs = Integer.parseInt(settings[7]);
                     maxMobs = Integer.parseInt(settings[8]);
                     stackSize = Integer.parseInt(settings[9]);
@@ -331,9 +337,35 @@ public class YamlToDatabaseMigration {
         // Parse last interacted player
         String lastInteractedPlayer = yamlData.getString(path + ".lastInteractedPlayer");
 
-        // Parse inventory and convert to JSON format
-        List<String> inventoryData = yamlData.getStringList(path + ".inventory");
-        String inventoryJson = serializeInventoryToJson(inventoryData);
+        String encodedInventory;
+        long totalItems;
+        try {
+            Object rawInventory = yamlData.get(path + ".inventory");
+            Map<ItemStack, Long> decoded;
+            if (rawInventory instanceof String encoded && !encoded.isEmpty()) {
+                decoded = SpawnerInventoryCodec.decodeString(encoded);
+            } else if (rawInventory instanceof List<?> rawList && !rawList.isEmpty()) {
+                List<String> entries = new ArrayList<>(rawList.size());
+                for (Object value : rawList) {
+                    if (!(value instanceof String entry)) {
+                        throw new java.io.IOException("Inventory contains a non-string entry");
+                    }
+                    entries.add(entry);
+                }
+                decoded = LegacyInventoryCodec.deserialize(entries);
+            } else {
+                decoded = Map.of();
+            }
+
+            Map<ItemSignature, Long> consolidated = new LinkedHashMap<>();
+            for (Map.Entry<ItemStack, Long> entry : decoded.entrySet()) {
+                consolidated.merge(new ItemSignature(entry.getKey()), entry.getValue(), Math::addExact);
+            }
+            encodedInventory = SpawnerInventoryCodec.encodeToString(consolidated);
+            totalItems = SpawnerInventoryCodec.totalItems(consolidated);
+        } catch (Exception failure) {
+            throw new SQLException("Could not migrate inventory for spawner " + spawnerId, failure);
+        }
 
         // Set statement parameters
         stmt.setString(1, spawnerId);
@@ -344,13 +376,13 @@ public class YamlToDatabaseMigration {
         stmt.setInt(6, locZ);
         stmt.setString(7, entityType.name());
         stmt.setString(8, itemSpawnerMaterial);
-        stmt.setInt(9, spawnerExp);
+        stmt.setLong(9, spawnerExp);
         stmt.setBoolean(10, spawnerActive);
         stmt.setInt(11, spawnerRange);
         stmt.setBoolean(12, spawnerStop);
         stmt.setLong(13, spawnDelay);
         stmt.setInt(14, maxSpawnerLootSlots);
-        stmt.setInt(15, maxStoredExp);
+        stmt.setLong(15, maxStoredExp);
         stmt.setInt(16, minMobs);
         stmt.setInt(17, maxMobs);
         stmt.setInt(18, stackSize);
@@ -360,26 +392,12 @@ public class YamlToDatabaseMigration {
         stmt.setString(22, lastInteractedPlayer);
         stmt.setString(23, preferredSortItemStr);
         stmt.setString(24, filteredItemsStr);
-        stmt.setString(25, inventoryJson);
-        stmt.setLong(26, yamlData.getLong(path + ".lifetimeExpiresAt", -1L));
-        stmt.setBoolean(27, yamlData.getBoolean(path + ".expired", false));
+        stmt.setString(25, encodedInventory);
+        stmt.setLong(26, totalItems);
+        stmt.setLong(27, yamlData.getLong(path + ".lifetimeExpiresAt", -1L));
+        stmt.setBoolean(28, yamlData.getBoolean(path + ".expired", false));
 
         return true;
     }
 
-    private String serializeInventoryToJson(List<String> inventoryData) {
-        if (inventoryData == null || inventoryData.isEmpty()) {
-            return null;
-        }
-
-        // Convert YAML list format to JSON array format
-        StringBuilder sb = new StringBuilder();
-        sb.append("[");
-        for (int i = 0; i < inventoryData.size(); i++) {
-            if (i > 0) sb.append(",");
-            sb.append("\"").append(inventoryData.get(i).replace("\"", "\\\"")).append("\"");
-        }
-        sb.append("]");
-        return sb.toString();
-    }
 }

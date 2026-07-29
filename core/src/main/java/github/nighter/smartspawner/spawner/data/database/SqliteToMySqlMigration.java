@@ -1,10 +1,14 @@
 package github.nighter.smartspawner.spawner.data.database;
 
 import github.nighter.smartspawner.SmartSpawner;
+import github.nighter.smartspawner.spawner.data.legacy.LegacyInventoryCodec;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerInventoryCodec;
 import github.nighter.smartspawner.spawner.data.storage.StorageMode;
+import org.bukkit.inventory.ItemStack;
 
 import java.io.File;
 import java.sql.*;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -28,9 +32,9 @@ public class SqliteToMySqlMigration {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data,
+                preferred_sort_item, filtered_items, inventory_data, total_items,
                 lifetime_expires_at, lifetime_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 world_name = VALUES(world_name),
                 loc_x = VALUES(loc_x),
@@ -55,6 +59,7 @@ public class SqliteToMySqlMigration {
                 preferred_sort_item = VALUES(preferred_sort_item),
                 filtered_items = VALUES(filtered_items),
                 inventory_data = VALUES(inventory_data),
+                total_items = VALUES(total_items),
                 lifetime_expires_at = VALUES(lifetime_expires_at),
                 lifetime_expired = VALUES(lifetime_expired)
             """;
@@ -179,13 +184,13 @@ public class SqliteToMySqlMigration {
                         insertStmt.setInt(6, rs.getInt("loc_z"));
                         insertStmt.setString(7, rs.getString("entity_type"));
                         insertStmt.setString(8, rs.getString("item_spawner_material"));
-                        insertStmt.setInt(9, rs.getInt("spawner_exp"));
+                        insertStmt.setLong(9, rs.getLong("spawner_exp"));
                         insertStmt.setBoolean(10, rs.getBoolean("spawner_active"));
                         insertStmt.setInt(11, rs.getInt("spawner_range"));
                         insertStmt.setBoolean(12, rs.getBoolean("spawner_stop"));
                         insertStmt.setLong(13, rs.getLong("spawn_delay"));
                         insertStmt.setInt(14, rs.getInt("max_spawner_loot_slots"));
-                        insertStmt.setInt(15, rs.getInt("max_stored_exp"));
+                        insertStmt.setLong(15, rs.getLong("max_stored_exp"));
                         insertStmt.setInt(16, rs.getInt("min_mobs"));
                         insertStmt.setInt(17, rs.getInt("max_mobs"));
                         insertStmt.setInt(18, rs.getInt("stack_size"));
@@ -195,9 +200,11 @@ public class SqliteToMySqlMigration {
                         insertStmt.setString(22, rs.getString("last_interacted_player"));
                         insertStmt.setString(23, rs.getString("preferred_sort_item"));
                         insertStmt.setString(24, rs.getString("filtered_items"));
-                        insertStmt.setString(25, rs.getString("inventory_data"));
-                        insertStmt.setLong(26, rs.getLong("lifetime_expires_at"));
-                        insertStmt.setBoolean(27, rs.getBoolean("lifetime_expired"));
+                        String inventoryData = rs.getString("inventory_data");
+                        insertStmt.setString(25, inventoryData);
+                        insertStmt.setLong(26, calculateTotalItems(inventoryData));
+                        insertStmt.setLong(27, rs.getLong("lifetime_expires_at"));
+                        insertStmt.setBoolean(28, rs.getBoolean("lifetime_expired"));
 
                         insertStmt.addBatch();
                         batchCount++;
@@ -255,5 +262,27 @@ public class SqliteToMySqlMigration {
             }
         }
         return expiry && expired;
+    }
+
+    private long calculateTotalItems(String inventoryData) throws Exception {
+        if (inventoryData == null || inventoryData.isEmpty()) {
+            return 0L;
+        }
+
+        Map<ItemStack, Long> items = inventoryData.startsWith(SpawnerInventoryCodec.PREFIX)
+                ? SpawnerInventoryCodec.decodeString(inventoryData)
+                : LegacyInventoryCodec.deserialize(LegacyInventoryCodec.parseJsonArray(inventoryData));
+
+        long total = 0L;
+        for (Long amount : items.values()) {
+            if (amount == null || amount <= 0L) {
+                continue;
+            }
+            if (total > Long.MAX_VALUE - amount) {
+                return Long.MAX_VALUE;
+            }
+            total += amount;
+        }
+        return total;
     }
 }
