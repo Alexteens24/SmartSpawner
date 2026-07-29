@@ -49,7 +49,8 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                    spawner_exp, spawner_active, spawner_range, spawner_stop, spawn_delay,
                    max_spawner_loot_slots, max_stored_exp, min_mobs, max_mobs, stack_size,
                    max_stack_size, last_spawn_time, is_at_capacity, last_interacted_player,
-                   preferred_sort_item, filtered_items, inventory_data
+                   preferred_sort_item, filtered_items, inventory_data,
+                   lifetime_expires_at, lifetime_expired
             FROM smart_spawners WHERE server_name = ?
             """;
 
@@ -58,7 +59,8 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                    spawner_exp, spawner_active, spawner_range, spawner_stop, spawn_delay,
                    max_spawner_loot_slots, max_stored_exp, min_mobs, max_mobs, stack_size,
                    max_stack_size, last_spawn_time, is_at_capacity, last_interacted_player,
-                   preferred_sort_item, filtered_items, inventory_data
+                   preferred_sort_item, filtered_items, inventory_data,
+                   lifetime_expires_at, lifetime_expired
             FROM smart_spawners WHERE server_name = ? AND spawner_id = ?
             """;
 
@@ -75,8 +77,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                preferred_sort_item, filtered_items, inventory_data,
+                lifetime_expires_at, lifetime_expired
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 world_name = VALUES(world_name),
                 loc_x = VALUES(loc_x),
@@ -100,7 +103,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 last_interacted_player = VALUES(last_interacted_player),
                 preferred_sort_item = VALUES(preferred_sort_item),
                 filtered_items = VALUES(filtered_items),
-                inventory_data = VALUES(inventory_data)
+                inventory_data = VALUES(inventory_data),
+                lifetime_expires_at = VALUES(lifetime_expires_at),
+                lifetime_expired = VALUES(lifetime_expired)
             """;
 
     // SQLite upsert syntax (ON CONFLICT)
@@ -111,8 +116,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                preferred_sort_item, filtered_items, inventory_data,
+                lifetime_expires_at, lifetime_expired
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_name, spawner_id) DO UPDATE SET
                 world_name = excluded.world_name,
                 loc_x = excluded.loc_x,
@@ -136,7 +142,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 last_interacted_player = excluded.last_interacted_player,
                 preferred_sort_item = excluded.preferred_sort_item,
                 filtered_items = excluded.filtered_items,
-                inventory_data = excluded.inventory_data
+                inventory_data = excluded.inventory_data,
+                lifetime_expires_at = excluded.lifetime_expires_at,
+                lifetime_expired = excluded.lifetime_expired
             """;
 
     private static final String DELETE_SQL = """
@@ -326,6 +334,8 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         stmt.setString(23, spawner.getPreferredSortItem() != null ? spawner.getPreferredSortItem().name() : null);
         stmt.setString(24, serializeFilteredItems(spawner.getFilteredItems()));
         stmt.setString(25, serializeInventory(spawner.getVirtualInventory()));
+        stmt.setLong(26, spawner.isTimed() ? spawner.getLifetimeExpiresAt() : -1L);
+        stmt.setBoolean(27, spawner.isExpired());
     }
 
     @Override
@@ -473,6 +483,12 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         spawner.setStackSize(rs.getInt("stack_size"), false); // Don't restart hopper during batch load
         spawner.setLastSpawnTime(rs.getLong("last_spawn_time"));
         spawner.setIsAtCapacity(rs.getBoolean("is_at_capacity"));
+        spawner.setLifetimeExpiresAt(rs.getLong("lifetime_expires_at"));
+        spawner.setExpired(rs.getBoolean("lifetime_expired"));
+        if (spawner.isExpired()) {
+            spawner.setSpawnerActive(false);
+            spawner.getSpawnerStop().set(true);
+        }
 
         // Load player interaction data
         spawner.setLastInteractedPlayer(rs.getString("last_interacted_player"));

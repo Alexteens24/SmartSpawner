@@ -8,6 +8,7 @@ import github.nighter.smartspawner.spawner.gui.synchronization.SpawnerGuiViewMan
 import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import github.nighter.smartspawner.spawner.properties.VirtualInventory;
+import github.nighter.smartspawner.spawner.utils.SpawnerTypeChecker;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -213,6 +214,9 @@ public class SpawnerSellManager {
 
         for (Map.Entry<ItemSignature, Long> entry : consolidatedItems.entrySet()) {
             ItemSignature signature = entry.getKey();
+            if (SpawnerTypeChecker.isEmptySpawner(signature.getUnsafeTemplateRef())) {
+                continue;
+            }
             long amount = entry.getValue();
             int maxStackSize = signature.getMaxStackSize();
 

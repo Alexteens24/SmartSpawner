@@ -90,3 +90,14 @@ vanilla_spawner:
   default:
     name: "{entity} Spawner"
     lore:
+
+timed_spawner:
+  lore:
+    - ' &#5DB5F1• &fLifetime per spawner: &e{duration}'
+
+empty_spawner:
+  name: '&#888888Empty Spawner'
+  lore:
+    - ''
+    - '&7An expired spawner cage.'
+    - '&7This item cannot be placed.'

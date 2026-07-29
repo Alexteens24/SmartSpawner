@@ -171,6 +171,11 @@ public class SpawnerClickManager implements Listener {
             return;
         }
 
+        if (spawner.isExpired()) {
+            openSpawnerMenu(player, spawner);
+            return;
+        }
+
         // Handle spawn egg usage
         if (isSpawnEgg(itemType)) {
             spawnEggHandler.handleSpawnEggUse(player, (CreatureSpawner) block.getState(false), spawner, heldItem);

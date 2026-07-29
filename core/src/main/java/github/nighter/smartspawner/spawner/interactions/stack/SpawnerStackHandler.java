@@ -101,6 +101,11 @@ public class SpawnerStackHandler {
             return false;
         }
 
+        if (targetSpawner.isExpired() || SpawnerTypeChecker.isEmptySpawner(itemInHand)) {
+            messageService.sendMessage(player, "lifetime.expired_cannot_stack");
+            return false;
+        }
+
         Location location = targetSpawner.getSpawnerLocation();
         if (!hasStackPermissions(player, location)) {
             return false;
@@ -109,6 +114,13 @@ public class SpawnerStackHandler {
         // Check if either the target or the item is a vanilla spawner
         if (SpawnerTypeChecker.isVanillaSpawner(itemInHand)) {
             messageService.sendMessage(player, "spawner_different");
+            return false;
+        }
+
+        long itemDuration = SpawnerTypeChecker.getLifetimeDurationMillis(itemInHand);
+        boolean itemIsTimed = itemDuration > 0L;
+        if (targetSpawner.isTimed() != itemIsTimed) {
+            messageService.sendMessage(player, "lifetime.mixed_stack_denied");
             return false;
         }
 
@@ -160,7 +172,8 @@ public class SpawnerStackHandler {
             return false;
         }
 
-        return processStackAddition(player, targetSpawner, itemInHand, stackAll, currentStack, maxStackSize);
+        return processStackAddition(player, targetSpawner, itemInHand, stackAll, currentStack,
+                maxStackSize, itemDuration);
     }
 
     private boolean hasStackPermissions(Player player, Location location) {
@@ -197,12 +210,25 @@ public class SpawnerStackHandler {
     }
 
     private boolean processStackAddition(Player player, SpawnerData targetSpawner, ItemStack itemInHand,
-                                         boolean stackAll, int currentStack, int maxStackSize) {
+                                         boolean stackAll, int currentStack, int maxStackSize,
+                                         long itemDuration) {
         int itemAmount = itemInHand.getAmount();
         int spaceLeft = maxStackSize - currentStack;
 
         int amountToStack = stackAll ? Math.min(spaceLeft, itemAmount) : 1;
         int newStack = currentStack + amountToStack;
+        long newExpiry = targetSpawner.getLifetimeExpiresAt();
+        if (itemDuration > 0L) {
+            try {
+                newExpiry = Math.addExact(
+                        targetSpawner.getLifetimeExpiresAt(),
+                        Math.multiplyExact(itemDuration, amountToStack)
+                );
+            } catch (ArithmeticException e) {
+                messageService.sendMessage(player, "lifetime.duration_overflow");
+                return false;
+            }
+        }
 
         if(SpawnerStackEvent.getHandlerList().getRegisteredListeners().length != 0) {
             SpawnerStackEvent e = new SpawnerStackEvent(player, targetSpawner.getSpawnerLocation(), currentStack, newStack,
@@ -213,6 +239,9 @@ public class SpawnerStackHandler {
 
         // Update spawner data
         targetSpawner.setStackSize(newStack);
+        if (itemDuration > 0L) {
+            targetSpawner.setLifetimeExpiresAt(newExpiry);
+        }
 
         // Mark spawner as modified for database save
         spawnerManager.markSpawnerModified(targetSpawner.getSpawnerId());

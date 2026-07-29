@@ -283,6 +283,14 @@ public class LanguageManager {
         return hologram.text();
     }
 
+    public String getHologramLifetimeLine() {
+        return hologram.lifetimeLine();
+    }
+
+    public String getHologramExpiredText() {
+        return hologram.expiredText();
+    }
+
     public void clearCache() {
         cache.clear();
         items.clearCache();

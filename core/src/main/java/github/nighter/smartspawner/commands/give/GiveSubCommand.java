@@ -9,6 +9,7 @@ import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.commands.BaseSubCommand;
 import github.nighter.smartspawner.utils.DynamicEntityValidator;
 import github.nighter.smartspawner.spawner.item.SpawnerItemFactory;
+import github.nighter.smartspawner.spawner.lifetime.SpawnerDuration;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
@@ -75,10 +76,19 @@ public class GiveSubCommand extends BaseSubCommand {
                 .then(Commands.argument("player", ArgumentTypes.player())
                         .then(Commands.argument("mobType", StringArgumentType.word())
                                 .suggests(createMobSuggestions())
-                                .executes(context -> executeGive(context, false, 1))
+                                .executes(context -> executeGive(context, false, 1, -1L))
+                                .then(Commands.argument("duration", StringArgumentType.word())
+                                        .suggests(createDurationSuggestions())
+                                        .executes(context -> executeGive(context, false, 1,
+                                                parseDuration(context))))
                                 .then(Commands.argument("amount", IntegerArgumentType.integer(1, MAX_AMOUNT))
                                         .executes(context -> executeGive(context, false,
-                                                IntegerArgumentType.getInteger(context, "amount"))))));
+                                                IntegerArgumentType.getInteger(context, "amount"), -1L))
+                                        .then(Commands.argument("duration", StringArgumentType.word())
+                                                .suggests(createDurationSuggestions())
+                                                .executes(context -> executeGive(context, false,
+                                                        IntegerArgumentType.getInteger(context, "amount"),
+                                                        parseDuration(context)))))));
     }
 
     private LiteralArgumentBuilder<CommandSourceStack> buildVanillaGiveCommand() {
@@ -86,10 +96,10 @@ public class GiveSubCommand extends BaseSubCommand {
                 .then(Commands.argument("player", ArgumentTypes.player())
                         .then(Commands.argument("mobType", StringArgumentType.word())
                                 .suggests(createMobSuggestions())
-                                .executes(context -> executeGive(context, true, 1))
+                                .executes(context -> executeGive(context, true, 1, -1L))
                                 .then(Commands.argument("amount", IntegerArgumentType.integer(1, MAX_AMOUNT))
                                         .executes(context -> executeGive(context, true,
-                                                IntegerArgumentType.getInteger(context, "amount"))))));
+                                                IntegerArgumentType.getInteger(context, "amount"), -1L)))));
     }
 
     private LiteralArgumentBuilder<CommandSourceStack> buildItemSpawnerGiveCommand() {
@@ -110,8 +120,30 @@ public class GiveSubCommand extends BaseSubCommand {
                     .map(String::toLowerCase) // Convert to lowercase for suggestions
                     .filter(mob -> mob.startsWith(input))
                     .forEach(builder::suggest);
+            if ("all".startsWith(input)) {
+                builder.suggest("all");
+            }
             return builder.buildFuture();
         };
+    }
+
+    private SuggestionProvider<CommandSourceStack> createDurationSuggestions() {
+        return (context, builder) -> {
+            for (String duration : List.of("1h", "8h", "16h", "24h", "3d", "7d")) {
+                if (duration.startsWith(builder.getRemaining().toLowerCase())) {
+                    builder.suggest(duration);
+                }
+            }
+            return builder.buildFuture();
+        };
+    }
+
+    private long parseDuration(CommandContext<CommandSourceStack> context) {
+        try {
+            return SpawnerDuration.parseMillis(StringArgumentType.getString(context, "duration"));
+        } catch (IllegalArgumentException | ArithmeticException e) {
+            return Long.MIN_VALUE;
+        }
     }
 
     private SuggestionProvider<CommandSourceStack> createItemSuggestions() {
@@ -130,11 +162,17 @@ public class GiveSubCommand extends BaseSubCommand {
         return 0;
     }
 
-    private int executeGive(CommandContext<CommandSourceStack> context, boolean isVanilla, int amount) {
+    private int executeGive(CommandContext<CommandSourceStack> context, boolean isVanilla,
+                            int amount, long durationMillis) {
         CommandSender sender = context.getSource().getSender();
         
         // Log command execution
         logCommandExecution(context);
+
+        if (durationMillis == Long.MIN_VALUE) {
+            plugin.getMessageService().sendMessage(sender, "give.invalid_duration");
+            return 0;
+        }
 
         try {
             // Get the player selector and resolve it
@@ -148,6 +186,26 @@ public class GiveSubCommand extends BaseSubCommand {
 
             Player target = players.get(0); // Get the first (and typically only) player from the selector
             String mobType = StringArgumentType.getString(context, "mobType");
+
+            if (!isVanilla && mobType.equalsIgnoreCase("all")) {
+                for (String supportedMob : supportedMobs) {
+                    EntityType entityType = EntityType.valueOf(supportedMob);
+                    ItemStack item = durationMillis > 0L
+                            ? spawnerItemFactory.createSmartSpawnerItem(entityType, amount, durationMillis)
+                            : spawnerItemFactory.createSmartSpawnerItem(entityType, amount);
+                    giveOrDropOverflow(target, item);
+                }
+                target.playSound(target.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.0f);
+
+                Map<String, String> placeholders = new HashMap<>();
+                placeholders.put("player", target.getName());
+                placeholders.put("amount", String.valueOf(amount));
+                placeholders.put("entity", "all supported mobs");
+                placeholders.put("ᴇɴᴛɪᴛʏ", "all supported mobs");
+                plugin.getMessageService().sendMessage(sender, "give.spawner_given", placeholders);
+                plugin.getMessageService().sendMessage(target, "give.spawner_received", placeholders);
+                return 1;
+            }
 
             // Validate mob type (case insensitive check)
             if (!supportedMobs.contains(mobType.toUpperCase())) {
@@ -163,7 +221,9 @@ public class GiveSubCommand extends BaseSubCommand {
                 spawnerItem = spawnerItemFactory.createVanillaSpawnerItem(entityType, amount);
             } else {
                 // Use spawner item factory for smart spawners
-                spawnerItem = spawnerItemFactory.createSmartSpawnerItem(entityType, amount);
+                spawnerItem = durationMillis > 0L
+                        ? spawnerItemFactory.createSmartSpawnerItem(entityType, amount, durationMillis)
+                        : spawnerItemFactory.createSmartSpawnerItem(entityType, amount);
             }
 
             giveOrDropOverflow(target, spawnerItem);
@@ -193,6 +253,9 @@ public class GiveSubCommand extends BaseSubCommand {
             plugin.getMessageService().sendMessage(target, "give.spawner_received", targetPlaceholders);
 
             return 1;
+        } catch (IllegalArgumentException | ArithmeticException e) {
+            plugin.getMessageService().sendMessage(sender, "give.invalid_duration");
+            return 0;
         } catch (Exception e) {
             plugin.getLogger().severe("Error executing give command: " + e.getMessage());
             return 0;

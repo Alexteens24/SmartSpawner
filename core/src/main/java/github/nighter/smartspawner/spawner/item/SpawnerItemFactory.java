@@ -2,10 +2,13 @@ package github.nighter.smartspawner.spawner.item;
 
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.language.LanguageManager;
+import github.nighter.smartspawner.language.format.ColorUtil;
+import github.nighter.smartspawner.spawner.lifetime.SpawnerDuration;
 import github.nighter.smartspawner.spawner.lootgen.loot.EntityLootConfig;
 import github.nighter.smartspawner.spawner.lootgen.loot.LootItem;
 import github.nighter.smartspawner.utils.ItemTooltipUtil;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.block.BlockState;
@@ -28,6 +31,8 @@ public class SpawnerItemFactory {
     private final SmartSpawner plugin;
     private final LanguageManager languageManager;
     private static NamespacedKey VANILLA_SPAWNER_KEY;
+    private static NamespacedKey LIFETIME_DURATION_KEY;
+    private static NamespacedKey EMPTY_SPAWNER_KEY;
     private final Map<EntityType, ItemStack> spawnerItemCache = new HashMap<>();
     private final Map<EntityType, Long> cacheTimestamps = new HashMap<>();
     private long lastCacheCleanup = System.currentTimeMillis();
@@ -36,6 +41,8 @@ public class SpawnerItemFactory {
         this.plugin = plugin;
         this.languageManager = plugin.getLanguageManager();
         VANILLA_SPAWNER_KEY = new NamespacedKey(plugin, "vanilla_spawner");
+        LIFETIME_DURATION_KEY = new NamespacedKey(plugin, "lifetime_duration_ms");
+        EMPTY_SPAWNER_KEY = new NamespacedKey(plugin, "empty_spawner");
     }
 
     public void reload() {
@@ -141,6 +148,62 @@ public class SpawnerItemFactory {
                 }
             }
         }
+        return spawner;
+    }
+
+    public ItemStack createSmartSpawnerItem(EntityType entityType, int amount, long durationMillis) {
+        ItemStack spawner = createSmartSpawnerItem(entityType, amount);
+        ItemMeta meta = spawner.getItemMeta();
+        if (meta == null) {
+            return spawner;
+        }
+
+        meta.getPersistentDataContainer().set(
+                LIFETIME_DURATION_KEY,
+                PersistentDataType.LONG,
+                durationMillis
+        );
+
+        List<Component> lore = meta.lore() == null
+                ? new ArrayList<>()
+                : new ArrayList<>(Objects.requireNonNull(meta.lore()));
+        Map<String, String> placeholders = Map.of(
+                "duration", SpawnerDuration.formatCompact(durationMillis)
+        );
+        for (String line : languageManager.getItemLore("timed_spawner.lore", placeholders)) {
+            lore.add(LegacyComponentSerializer.legacySection().deserialize(
+                    ColorUtil.translateHexColorCodes(line)
+            ));
+        }
+        meta.lore(lore);
+        spawner.setItemMeta(meta);
+        return spawner;
+    }
+
+    public ItemStack createEmptySpawnerItem() {
+        return createEmptySpawnerItem(1);
+    }
+
+    public ItemStack createEmptySpawnerItem(int amount) {
+        ItemStack spawner = new ItemStack(Material.SPAWNER, amount);
+        ItemMeta meta = spawner.getItemMeta();
+        if (meta == null) {
+            return spawner;
+        }
+
+        meta.setDisplayName(languageManager.getItemName("empty_spawner.name"));
+        List<String> lore = Arrays.asList(languageManager.getItemLore("empty_spawner.lore"));
+        if (!lore.isEmpty()) {
+            meta.setLore(lore);
+        }
+        meta.getPersistentDataContainer().set(
+                EMPTY_SPAWNER_KEY,
+                PersistentDataType.BOOLEAN,
+                true
+        );
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+        spawner.setItemMeta(meta);
+        ItemTooltipUtil.hideTooltip(spawner);
         return spawner;
     }
 

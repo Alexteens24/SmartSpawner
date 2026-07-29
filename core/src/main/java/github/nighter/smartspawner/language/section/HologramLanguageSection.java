@@ -33,4 +33,13 @@ public final class HologramLanguageSection {
                 ? plugin.getConfig().getString("hologram.text", "")
                 : String.join("\n", lines);
     }
+
+    public String lifetimeLine() {
+        return localeSupplier.get().hologram().getString(
+                "lifetime.line", "&#5DB5F1• &fTime: &e{remaining_time}");
+    }
+
+    public String expiredText() {
+        return localeSupplier.get().hologram().getString("lifetime.expired", "Expired");
+    }
 }

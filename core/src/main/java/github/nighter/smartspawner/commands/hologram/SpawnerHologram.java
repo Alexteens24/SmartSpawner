@@ -4,6 +4,7 @@ import github.nighter.smartspawner.Scheduler;
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.language.format.ColorUtil;
 import github.nighter.smartspawner.language.LanguageManager;
+import github.nighter.smartspawner.spawner.lifetime.SpawnerDuration;
 
 import org.bukkit.Color;
 import org.bukkit.Location;
@@ -27,6 +28,9 @@ public class SpawnerHologram {
     private long maxExp;
     private int currentItems;
     private int maxSlots;
+    private long remainingLifetimeMillis;
+    private boolean timed;
+    private boolean expired;
     private static final String HOLOGRAM_IDENTIFIER = "SmartSpawner-Holo";
     private final String uniqueIdentifier;
 
@@ -140,7 +144,17 @@ public class SpawnerHologram {
         double pctStorage = maxSlots > 0 ? (double) currentItems / maxSlots * 100 : 0;
         double pctExp = maxExp > 0 ? (double) currentExp / maxExp * 100 : 0;
 
-        return getProcessedTemplate()
+        String template = getProcessedTemplate();
+        if (timed && !template.contains("{remaining_time}")) {
+            template += "\n" + ColorUtil.translateHexColorCodes(
+                    languageManager.getHologramLifetimeLine());
+        }
+
+        String remainingTime = expired
+                ? languageManager.getHologramExpiredText()
+                : SpawnerDuration.formatCompact(remainingLifetimeMillis);
+
+        return template
                 .replace("{entity}", cachedEntityName)
                 .replace("{ᴇɴᴛɪᴛʏ}", cachedEntitySmallCaps)
                 .replace("{stack_size}", String.valueOf(stackSize))
@@ -151,7 +165,8 @@ public class SpawnerHologram {
                 .replace("{percent_storage_decimal}", formatOneDecimal(pctStorage))
                 .replace("{percent_storage_rounded}", String.valueOf((int) Math.round(pctStorage)))
                 .replace("{percent_exp_decimal}", formatOneDecimal(pctExp))
-                .replace("{percent_exp_rounded}", String.valueOf((int) Math.round(pctExp)));
+                .replace("{percent_exp_rounded}", String.valueOf((int) Math.round(pctExp)))
+                .replace("{remaining_time}", remainingTime);
     }
 
     /** Faster substitute for {@code String.format("%.1f", value)}. */
@@ -179,7 +194,9 @@ public class SpawnerHologram {
         });
     }
 
-    public void updateData(int stackSize, EntityType entityType, long currentExp, long maxExp, int currentItems, int maxSlots) {
+    public void updateData(int stackSize, EntityType entityType, long currentExp, long maxExp,
+                           int currentItems, int maxSlots, long remainingLifetimeMillis,
+                           boolean timed, boolean expired) {
         TextDisplay display = textDisplay.get();
 
         // Skip entirely when nothing has changed and the hologram already exists.
@@ -189,7 +206,10 @@ public class SpawnerHologram {
                 && this.currentExp == currentExp
                 && this.maxExp == maxExp
                 && this.currentItems == currentItems
-                && this.maxSlots == maxSlots) {
+                && this.maxSlots == maxSlots
+                && this.remainingLifetimeMillis / 1000L == remainingLifetimeMillis / 1000L
+                && this.timed == timed
+                && this.expired == expired) {
             return;
         }
 
@@ -199,6 +219,9 @@ public class SpawnerHologram {
         this.maxExp = maxExp;
         this.currentItems = currentItems;
         this.maxSlots = maxSlots;
+        this.remainingLifetimeMillis = remainingLifetimeMillis;
+        this.timed = timed;
+        this.expired = expired;
 
         if (display == null) {
             createHologram();

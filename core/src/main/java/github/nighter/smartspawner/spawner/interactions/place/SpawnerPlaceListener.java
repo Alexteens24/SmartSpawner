@@ -58,6 +58,12 @@ public class SpawnerPlaceListener implements Listener {
         ItemStack item = event.getItemInHand();
         ItemMeta meta = item.getItemMeta();
 
+        if (SpawnerTypeChecker.isEmptySpawner(item)) {
+            event.setCancelled(true);
+            messageService.sendMessage(player, "lifetime.empty_spawner_cannot_place");
+            return;
+        }
+
         if (!checkPlacementCooldown(player)) {
             event.setCancelled(true);
             return;
@@ -81,6 +87,17 @@ public class SpawnerPlaceListener implements Listener {
         }
 
         int stackSize = calculateStackSize(player, item, isVanillaSpawner);
+        long perSpawnerDuration = SpawnerTypeChecker.getLifetimeDurationMillis(item);
+        long totalDuration = -1L;
+        if (perSpawnerDuration > 0L) {
+            try {
+                totalDuration = Math.multiplyExact(perSpawnerDuration, stackSize);
+            } catch (ArithmeticException e) {
+                event.setCancelled(true);
+                messageService.sendMessage(player, "lifetime.duration_overflow");
+                return;
+            }
+        }
 
         EntityType storedEntityType = null;
         Material itemSpawnerMaterial = null;
@@ -117,7 +134,8 @@ public class SpawnerPlaceListener implements Listener {
             return;
         }
 
-        handleSpawnerSetup(block, player, storedEntityType, isVanillaSpawner, stackSize, itemSpawnerMaterial);
+        handleSpawnerSetup(block, player, storedEntityType, isVanillaSpawner, stackSize,
+                itemSpawnerMaterial, totalDuration);
     }
 
     private boolean checkPlacementCooldown(Player player) {
@@ -212,7 +230,8 @@ public class SpawnerPlaceListener implements Listener {
     }
 
     private void handleSpawnerSetup(Block block, Player player, EntityType entityType,
-                                    boolean isVanillaSpawner, int stackSize, Material itemSpawnerMaterial) {
+                                    boolean isVanillaSpawner, int stackSize, Material itemSpawnerMaterial,
+                                    long totalDuration) {
         if (entityType == null || entityType == EntityType.UNKNOWN) {
             return;
         }
@@ -249,7 +268,7 @@ public class SpawnerPlaceListener implements Listener {
 
                 delayedSpawner.setSpawnedType(finalEntityType);
                 delayedSpawner.update(true, false);
-                createSmartSpawner(block, player, finalEntityType, stackSize);
+                createSmartSpawner(block, player, finalEntityType, stackSize, totalDuration);
             }
 
             setupHopperIntegration(block);
@@ -269,7 +288,8 @@ public class SpawnerPlaceListener implements Listener {
         return entityType;
     }
 
-    private void createSmartSpawner(Block block, Player player, EntityType entityType, int stackSize) {
+    private void createSmartSpawner(Block block, Player player, EntityType entityType, int stackSize,
+                                    long totalDuration) {
         // Check if a spawner already exists at this location (prevent duplicates/ghost spawners)
         SpawnerData existingSpawner = spawnerManager.getSpawnerByLocation(block.getLocation());
         if (existingSpawner != null) {
@@ -288,6 +308,14 @@ public class SpawnerPlaceListener implements Listener {
         SpawnerData spawner = new SpawnerData(spawnerId, block.getLocation(), entityType, plugin);
         spawner.setSpawnerActive(true);
         spawner.setStackSize(stackSize);
+        if (totalDuration > 0L) {
+            try {
+                spawner.setLifetimeExpiresAt(plugin.getSpawnerLifetimeService().createExpiry(totalDuration));
+            } catch (ArithmeticException e) {
+                plugin.getLogger().warning("Spawner lifetime overflow at " + block.getLocation());
+                spawner.setLifetimeExpiresAt(Long.MAX_VALUE);
+            }
+        }
 
         // Track player interaction for last interaction field
         spawner.updateLastInteractedPlayer(player.getName());

@@ -103,6 +103,21 @@ give:
   spawner_given:
     message: "Gave &a{amount} {entity} &fspawner(s) to &#3498db{player}&f."
     sound: entity.experience_orb.pickup
+  invalid_duration:
+    message: "&#FF4444Invalid duration. Use &f1h, 1d12h, 3d&#FF4444 (minimum 1 hour)."
+    sound: block.note_block.pling
+
+lifetime:
+  empty_spawner_cannot_place:
+    message: "&#FF4444Empty spawner cages cannot be placed."
+  duration_overflow:
+    message: "&#FF4444The combined spawner lifetime is too large."
+  expired_cannot_stack:
+    message: "&#FF4444Expired or empty spawners cannot be stacked."
+  mixed_stack_denied:
+    message: "&#FF4444Timed and permanent spawners cannot be mixed."
+  timed_destack_denied:
+    message: "&#FF4444Timed stacks cannot be split. Sneak-break the full stack."
 
 # ──────────────────────────────────────────────────────
 #                      /ss hologram

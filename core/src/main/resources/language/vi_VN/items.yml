@@ -90,3 +90,14 @@ vanilla_spawner:
   default:
     name: "Spawner {entity}"
     lore:
+
+timed_spawner:
+  lore:
+    - ' &#5DB5F1• &fThời hạn mỗi lồng: &e{duration}'
+
+empty_spawner:
+  name: '&#888888Lồng Spawner Trống'
+  lore:
+    - ''
+    - '&7Một lồng spawner đã hết hạn.'
+    - '&7Vật phẩm này không thể đặt.'

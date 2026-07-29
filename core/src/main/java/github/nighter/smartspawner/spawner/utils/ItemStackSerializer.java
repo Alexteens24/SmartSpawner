@@ -9,6 +9,7 @@ import org.bukkit.inventory.meta.PotionMeta;
 import org.bukkit.potion.PotionType;
 
 import java.util.*;
+import java.util.Base64;
 
 public class ItemStackSerializer {
     // Static lists for armor and tool materials
@@ -40,8 +41,16 @@ public class ItemStackSerializer {
 
     public static List<String> serializeInventory(Map<ItemSignature, Long> items) {
         Map<Material, ItemGroup> groupedItems = new HashMap<>();
+        List<String> serializedItems = new ArrayList<>();
 
         for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+            if (entry.getKey().hasItemMeta()) {
+                ItemStack template = entry.getKey().getTemplate();
+                template.setAmount(1);
+                String encoded = Base64.getEncoder().encodeToString(template.serializeAsBytes());
+                serializedItems.add("META#" + encoded + ":" + entry.getValue());
+                continue;
+            }
             // Use getTemplateRef() to avoid cloning - we only need to read properties
             ItemSignature signature = entry.getKey();
             Material material = signature.getMaterial();
@@ -65,7 +74,6 @@ public class ItemStackSerializer {
             }
         }
 
-        List<String> serializedItems = new ArrayList<>();
         for (ItemGroup group : groupedItems.values()) {
             if (group.getMaterial() == Material.TIPPED_ARROW) {
                 // Format: TIPPED_ARROW#potion_type:count,...
@@ -106,7 +114,17 @@ public class ItemStackSerializer {
         Map<ItemStack, Integer> result = new HashMap<>();
 
         for (String entry : data) {
-            if (entry.startsWith("TIPPED_ARROW#")) {
+            if (entry.startsWith("META#")) {
+                int separator = entry.lastIndexOf(':');
+                if (separator <= "META#".length()) {
+                    continue;
+                }
+                byte[] bytes = Base64.getDecoder().decode(
+                        entry.substring("META#".length(), separator));
+                ItemStack item = ItemStack.deserializeBytes(bytes);
+                int count = Math.toIntExact(Long.parseLong(entry.substring(separator + 1)));
+                result.put(item, count);
+            } else if (entry.startsWith("TIPPED_ARROW#")) {
                 // Handle TIPPED_ARROW with modern potion types
                 String[] potionEntries = entry.substring("TIPPED_ARROW#".length()).split(",");
                 for (String potionEntry : potionEntries) {

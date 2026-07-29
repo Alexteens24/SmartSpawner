@@ -28,8 +28,9 @@ public class SqliteToMySqlMigration {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                preferred_sort_item, filtered_items, inventory_data,
+                lifetime_expires_at, lifetime_expired
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 world_name = VALUES(world_name),
                 loc_x = VALUES(loc_x),
@@ -53,7 +54,9 @@ public class SqliteToMySqlMigration {
                 last_interacted_player = VALUES(last_interacted_player),
                 preferred_sort_item = VALUES(preferred_sort_item),
                 filtered_items = VALUES(filtered_items),
-                inventory_data = VALUES(inventory_data)
+                inventory_data = VALUES(inventory_data),
+                lifetime_expires_at = VALUES(lifetime_expires_at),
+                lifetime_expired = VALUES(lifetime_expired)
             """;
 
     private static final String SELECT_ALL_SQLITE = """
@@ -62,7 +65,19 @@ public class SqliteToMySqlMigration {
                    spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                    max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                    last_spawn_time, is_at_capacity, last_interacted_player,
-                   preferred_sort_item, filtered_items, inventory_data
+                   preferred_sort_item, filtered_items, inventory_data,
+                   lifetime_expires_at, lifetime_expired
+            FROM smart_spawners
+            """;
+
+    private static final String SELECT_ALL_LEGACY_SQLITE = """
+            SELECT spawner_id, server_name, world_name, loc_x, loc_y, loc_z,
+                   entity_type, item_spawner_material, spawner_exp, spawner_active,
+                   spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
+                   max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
+                   last_spawn_time, is_at_capacity, last_interacted_player,
+                   preferred_sort_item, filtered_items, inventory_data,
+                   -1 AS lifetime_expires_at, 0 AS lifetime_expired
             FROM smart_spawners
             """;
 
@@ -141,7 +156,8 @@ public class SqliteToMySqlMigration {
 
         try (Connection sqliteConn = DriverManager.getConnection(sqliteJdbcUrl);
              Connection mysqlConn = mysqlManager.getConnection();
-             PreparedStatement selectStmt = sqliteConn.prepareStatement(SELECT_ALL_SQLITE);
+             PreparedStatement selectStmt = sqliteConn.prepareStatement(
+                     hasLifetimeColumns(sqliteConn) ? SELECT_ALL_SQLITE : SELECT_ALL_LEGACY_SQLITE);
              PreparedStatement insertStmt = mysqlConn.prepareStatement(INSERT_SQL_MYSQL)) {
 
             mysqlConn.setAutoCommit(false);
@@ -180,6 +196,8 @@ public class SqliteToMySqlMigration {
                         insertStmt.setString(23, rs.getString("preferred_sort_item"));
                         insertStmt.setString(24, rs.getString("filtered_items"));
                         insertStmt.setString(25, rs.getString("inventory_data"));
+                        insertStmt.setLong(26, rs.getLong("lifetime_expires_at"));
+                        insertStmt.setBoolean(27, rs.getBoolean("lifetime_expired"));
 
                         insertStmt.addBatch();
                         batchCount++;
@@ -223,5 +241,19 @@ public class SqliteToMySqlMigration {
             logger.log(Level.SEVERE, "Database error during SQLite to MySQL migration", e);
             return false;
         }
+    }
+
+    private boolean hasLifetimeColumns(Connection connection) throws SQLException {
+        boolean expiry = false;
+        boolean expired = false;
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("PRAGMA table_info(smart_spawners)")) {
+            while (rs.next()) {
+                String name = rs.getString("name");
+                expiry |= "lifetime_expires_at".equalsIgnoreCase(name);
+                expired |= "lifetime_expired".equalsIgnoreCase(name);
+            }
+        }
+        return expiry && expired;
     }
 }

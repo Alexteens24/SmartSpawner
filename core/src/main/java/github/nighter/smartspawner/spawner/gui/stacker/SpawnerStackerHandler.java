@@ -317,6 +317,10 @@ public class SpawnerStackerHandler implements Listener {
     }
 
     private void processStackModification(Player player, SpawnerData spawner, int changeAmount) {
+        if (spawner.isTimed()) {
+            messageService.sendMessage(player, "lifetime.timed_destack_denied");
+            return;
+        }
         if (changeAmount < 0) {
             // Handle stack decrease
             handleStackDecrease(player, spawner, Math.abs(changeAmount));
@@ -498,6 +502,10 @@ public class SpawnerStackerHandler implements Listener {
     }
 
     private void handleAddAll(Player player, SpawnerData spawner) {
+        if (spawner.isTimed()) {
+            messageService.sendMessage(player, "lifetime.timed_destack_denied");
+            return;
+        }
         Location location = spawner.getSpawnerLocation();
         if (!locationLockManager.tryLock(location)) {
             messageService.sendMessage(player, "action_in_progress");
@@ -569,6 +577,10 @@ public class SpawnerStackerHandler implements Listener {
     }
 
     private void handleRemoveAll(Player player, SpawnerData spawner) {
+        if (spawner.isTimed()) {
+            messageService.sendMessage(player, "lifetime.timed_destack_denied");
+            return;
+        }
         Location location = spawner.getSpawnerLocation();
 
         if (!locationLockManager.tryLock(location)) {

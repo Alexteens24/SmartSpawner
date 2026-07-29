@@ -103,6 +103,21 @@ give:
   spawner_given:
     message: "Đã trao &a{amount} &fspawner {entity} cho &#3498db{player}&f."
     sound: entity.experience_orb.pickup
+  invalid_duration:
+    message: "&#FF4444Thời hạn không hợp lệ. Dùng &f1h, 1d12h, 3d&#FF4444 (tối thiểu 1 giờ)."
+    sound: block.note_block.pling
+
+lifetime:
+  empty_spawner_cannot_place:
+    message: "&#FF4444Lồng spawner trống không thể đặt."
+  duration_overflow:
+    message: "&#FF4444Tổng thời hạn spawner quá lớn."
+  expired_cannot_stack:
+    message: "&#FF4444Spawner hết hạn hoặc lồng trống không thể stack."
+  mixed_stack_denied:
+    message: "&#FF4444Không thể trộn spawner có thời hạn với spawner vĩnh viễn."
+  timed_destack_denied:
+    message: "&#FF4444Không thể tách stack có thời hạn. Hãy shift-đập toàn bộ stack."
 
 # ──────────────────────────────────────────────────────
 #                      /ss hologram

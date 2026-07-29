@@ -4,6 +4,7 @@ import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.api.events.SpawnerPlayerBreakEvent;
 import github.nighter.smartspawner.extras.HopperService;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
+import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.hooks.protections.CheckBreakBlock;
 import github.nighter.smartspawner.spawner.data.SpawnerManager;
 import github.nighter.smartspawner.spawner.gui.main.SpawnerMenuAction;
@@ -151,7 +152,22 @@ public class SpawnerBreakListener implements Listener {
                 return false;
             }
 
+            if (currentSpawner.isExpired()) {
+                plugin.getSpawnerGuiViewManager().closeAllViewersInventory(currentSpawner);
+                giveStoredItemsToPlayer(player, currentSpawner);
+                cleanupSpawner(block, currentSpawner);
+                if (player.getGameMode() != GameMode.CREATIVE) {
+                    reduceDurability(tool, player, breakConfig.getDurabilityLoss());
+                }
+                return true;
+            }
+
             boolean wantsStackBreak = player.isSneaking() && currentSpawner.getStackSize() > 1;
+            if (currentSpawner.isTimed() && currentSpawner.getStackSize() > 1
+                    && !(wantsStackBreak && breakConfig.isSneakBreakEnabled())) {
+                messageService.sendMessage(player, "lifetime.timed_destack_denied");
+                return false;
+            }
             boolean bypassDropChance = hasDropChanceBypass(player);
             if (wantsStackBreak && breakConfig.isSneakBreakEnabled() && !bypassDropChance && hasSmartSpawnerDropChance(currentSpawner)) {
                 messageService.sendMessage(player, "sneak_break_blocked");
@@ -282,7 +298,13 @@ public class SpawnerBreakListener implements Listener {
             template = spawnerItemFactory.createItemSpawnerItem(spawner.getSpawnedItemMaterial());
         } else {
             EntityType entityType = spawner.getEntityType();
-            template = spawnerItemFactory.createSmartSpawnerItem(entityType);
+            if (spawner.isTimed()) {
+                long perSpawnerDuration = Math.max(1L,
+                        spawner.getRemainingLifetimeMillis() / Math.max(1, currentStackSize));
+                template = spawnerItemFactory.createSmartSpawnerItem(entityType, 1, perSpawnerDuration);
+            } else {
+                template = spawnerItemFactory.createSmartSpawnerItem(entityType);
+            }
         }
 
         int dropAmount;
@@ -290,7 +312,10 @@ public class SpawnerBreakListener implements Listener {
         int newStackSize = currentStackSize;
 
         if (isCrouching) {
-            if (currentStackSize <= MAX_STACK_SIZE) {
+            if (spawner.isTimed()) {
+                dropAmount = currentStackSize;
+                shouldDeleteSpawner = true;
+            } else if (currentStackSize <= MAX_STACK_SIZE) {
                 dropAmount = currentStackSize;
                 shouldDeleteSpawner = true;
             } else {
@@ -345,9 +370,15 @@ public class SpawnerBreakListener implements Listener {
             return;
         }
 
-        ItemStack dropItem = result.getDropTemplate().clone();
-        dropItem.setAmount(result.getDroppedAmount());
-        world.dropItemNaturally(findSafeDropLocation(spawnerBlock, player), dropItem);
+        int remaining = result.getDroppedAmount();
+        int maxStack = Math.max(1, result.getDropTemplate().getMaxStackSize());
+        while (remaining > 0) {
+            ItemStack dropItem = result.getDropTemplate().clone();
+            int amount = Math.min(maxStack, remaining);
+            dropItem.setAmount(amount);
+            world.dropItemNaturally(findSafeDropLocation(spawnerBlock, player), dropItem);
+            remaining -= amount;
+        }
     }
 
     private double getSmartSpawnerDropChance(SpawnerData spawner) {
@@ -510,20 +541,52 @@ public class SpawnerBreakListener implements Listener {
     }
 
     private void giveSpawnersToPlayer(Player player, int amount, ItemStack template) {
-        final int MAX_STACK_SIZE = 64;
-
-        ItemStack itemToGive = template.clone();
-        itemToGive.setAmount(Math.min(amount, MAX_STACK_SIZE));
-
-        Map<Integer, ItemStack> failedItems = player.getInventory().addItem(itemToGive);
-
-        if (!failedItems.isEmpty()) {
-            for (ItemStack failedItem : failedItems.values()) {
-                player.getWorld().dropItemNaturally(player.getLocation().toCenterLocation(), failedItem);
+        int remaining = amount;
+        int maxStack = Math.max(1, template.getMaxStackSize());
+        boolean overflow = false;
+        while (remaining > 0) {
+            ItemStack itemToGive = template.clone();
+            int stackAmount = Math.min(maxStack, remaining);
+            itemToGive.setAmount(stackAmount);
+            Map<Integer, ItemStack> failedItems = player.getInventory().addItem(itemToGive);
+            if (!failedItems.isEmpty()) {
+                overflow = true;
+                for (ItemStack failedItem : failedItems.values()) {
+                    player.getWorld().dropItemNaturally(player.getLocation().toCenterLocation(), failedItem);
+                }
             }
+            remaining -= stackAmount;
+        }
+        if (overflow) {
             messageService.sendMessage(player, "inventory_full");
         }
 
+        player.updateInventory();
+    }
+
+    private void giveStoredItemsToPlayer(Player player, SpawnerData spawner) {
+        spawner.getInventoryLock().lock();
+        try {
+            for (Map.Entry<ItemSignature, Long> entry
+                    : spawner.getVirtualInventory().getConsolidatedItems().entrySet()) {
+                long remaining = entry.getValue();
+                ItemStack template = entry.getKey().getTemplate();
+                int maxStack = Math.max(1, template.getMaxStackSize());
+                while (remaining > 0L) {
+                    ItemStack stack = template.clone();
+                    int amount = (int) Math.min(maxStack, remaining);
+                    stack.setAmount(amount);
+                    Map<Integer, ItemStack> leftovers = player.getInventory().addItem(stack);
+                    for (ItemStack leftover : leftovers.values()) {
+                        player.getWorld().dropItemNaturally(
+                                player.getLocation().toCenterLocation(), leftover);
+                    }
+                    remaining -= amount;
+                }
+            }
+        } finally {
+            spawner.getInventoryLock().unlock();
+        }
         player.updateInventory();
     }
 

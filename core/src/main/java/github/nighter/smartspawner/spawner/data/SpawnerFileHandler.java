@@ -211,6 +211,9 @@ public class SpawnerFileHandler implements SpawnerStorage {
                         spawner.getIsAtCapacity());
 
                 spawnerData.set(path + ".settings", settings);
+                spawnerData.set(path + ".lifetimeExpiresAt",
+                        spawner.isTimed() ? spawner.getLifetimeExpiresAt() : null);
+                spawnerData.set(path + ".expired", spawner.isExpired() ? true : null);
                 
                 // Save last interacted player separately
                 spawnerData.set(path + ".lastInteractedPlayer", spawner.getLastInteractedPlayer());
@@ -411,6 +414,16 @@ public class SpawnerFileHandler implements SpawnerStorage {
                 logger.severe("Settings: " + settingsString);
                 e.printStackTrace();
                 return null;
+            }
+        }
+
+        if (spawnerData.contains(path + ".lifetimeExpiresAt")) {
+            spawner.setLifetimeExpiresAt(Math.max(0L,
+                    spawnerData.getLong(path + ".lifetimeExpiresAt")));
+            spawner.setExpired(spawnerData.getBoolean(path + ".expired", false));
+            if (spawner.isExpired()) {
+                spawner.setSpawnerActive(false);
+                spawner.getSpawnerStop().set(true);
             }
         }
 

@@ -36,8 +36,9 @@ public class YamlToDatabaseMigration {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                preferred_sort_item, filtered_items, inventory_data,
+                lifetime_expires_at, lifetime_expired
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 world_name = VALUES(world_name),
                 loc_x = VALUES(loc_x),
@@ -61,7 +62,9 @@ public class YamlToDatabaseMigration {
                 last_interacted_player = VALUES(last_interacted_player),
                 preferred_sort_item = VALUES(preferred_sort_item),
                 filtered_items = VALUES(filtered_items),
-                inventory_data = VALUES(inventory_data)
+                inventory_data = VALUES(inventory_data),
+                lifetime_expires_at = VALUES(lifetime_expires_at),
+                lifetime_expired = VALUES(lifetime_expired)
             """;
 
     // SQLite insert syntax
@@ -72,8 +75,9 @@ public class YamlToDatabaseMigration {
                 spawner_range, spawner_stop, spawn_delay, max_spawner_loot_slots,
                 max_stored_exp, min_mobs, max_mobs, stack_size, max_stack_size,
                 last_spawn_time, is_at_capacity, last_interacted_player,
-                preferred_sort_item, filtered_items, inventory_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                preferred_sort_item, filtered_items, inventory_data,
+                lifetime_expires_at, lifetime_expired
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_name, spawner_id) DO UPDATE SET
                 world_name = excluded.world_name,
                 loc_x = excluded.loc_x,
@@ -97,7 +101,9 @@ public class YamlToDatabaseMigration {
                 last_interacted_player = excluded.last_interacted_player,
                 preferred_sort_item = excluded.preferred_sort_item,
                 filtered_items = excluded.filtered_items,
-                inventory_data = excluded.inventory_data
+                inventory_data = excluded.inventory_data,
+                lifetime_expires_at = excluded.lifetime_expires_at,
+                lifetime_expired = excluded.lifetime_expired
             """;
 
     public YamlToDatabaseMigration(SmartSpawner plugin, DatabaseManager databaseManager) {
@@ -355,6 +361,8 @@ public class YamlToDatabaseMigration {
         stmt.setString(23, preferredSortItemStr);
         stmt.setString(24, filteredItemsStr);
         stmt.setString(25, inventoryJson);
+        stmt.setLong(26, yamlData.getLong(path + ".lifetimeExpiresAt", -1L));
+        stmt.setBoolean(27, yamlData.getBoolean(path + ".expired", false));
 
         return true;
     }

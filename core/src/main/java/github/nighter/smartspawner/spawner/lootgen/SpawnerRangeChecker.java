@@ -63,7 +63,7 @@ public class SpawnerRangeChecker {
                 } else {
                     // Spawner state hasn't changed, but check if it's time to spawn loot
                     // Only process active spawners that are not stopped
-                    if (sd.getSpawnerActive() && !sd.getSpawnerStop().get()) {
+                    if (sd.canGenerateLoot() && !sd.getSpawnerStop().get()) {
                         checkAndSpawnLoot(sd);
                     }
                 }
@@ -133,7 +133,7 @@ public class SpawnerRangeChecker {
         deactivateSpawner(spawner);
 
         // Check if spawner is actually active before starting
-        if (!spawner.getSpawnerActive()) {
+        if (!spawner.canGenerateLoot()) {
             return;
         }
 
@@ -183,13 +183,13 @@ public class SpawnerRangeChecker {
                         lastSpawnTime = spawner.getLastSpawnTime();
                         timeElapsed = currentTime - lastSpawnTime;
 
-                        if (timeElapsed >= cachedDelay && spawner.getSpawnerActive() && !spawner.getSpawnerStop().get()) {
+                        if (timeElapsed >= cachedDelay && spawner.canGenerateLoot() && !spawner.getSpawnerStop().get()) {
                             Location spawnerLocation = spawner.getSpawnerLocation();
                             if (spawnerLocation != null) {
                                 // Schedule loot spawning on the correct region thread
                                 Scheduler.runLocationTask(spawnerLocation, () -> {
                                     // Final check before spawning
-                                    if (!spawner.getSpawnerActive() || spawner.getSpawnerStop().get()) {
+                                    if (!spawner.canGenerateLoot() || spawner.getSpawnerStop().get()) {
                                         spawner.clearPreGeneratedLoot();
                                         return;
                                     }
@@ -245,4 +245,3 @@ public class SpawnerRangeChecker {
         }
     }
 }
-

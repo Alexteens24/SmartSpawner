@@ -103,6 +103,21 @@ give:
   spawner_given:
     message: "&#3498db{player} &fadlı oyuncuya &a{amount} &fadet &a{entity} &fspawnerı verildi."
     sound: entity.experience_orb.pickup
+  invalid_duration:
+    message: "&#FF4444Geçersiz süre. &f1h, 1d12h, 3d &#FF4444kullanın (en az 1 saat)."
+    sound: block.note_block.pling
+
+lifetime:
+  empty_spawner_cannot_place:
+    message: "&#FF4444Boş spawner kafesleri yerleştirilemez."
+  duration_overflow:
+    message: "&#FF4444Birleşik spawner süresi çok büyük."
+  expired_cannot_stack:
+    message: "&#FF4444Süresi dolmuş veya boş spawnerlar birleştirilemez."
+  mixed_stack_denied:
+    message: "&#FF4444Süreli ve kalıcı spawnerlar karıştırılamaz."
+  timed_destack_denied:
+    message: "&#FF4444Süreli yığın bölünemez. Tüm yığını eğilerek kırın."
 
 # ──────────────────────────────────────────────────────
 #                      /ss hologram

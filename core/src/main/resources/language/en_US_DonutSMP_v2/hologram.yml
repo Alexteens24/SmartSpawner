@@ -18,3 +18,7 @@ hologram_text:
   - '&8[&f{stack_size}&8] &#5DB5F1{entity} Spawner'
   - '&#5DB5F1• &fEXP: &a{current_exp}&f/&a{max_exp}'
   - '&#5DB5F1• &fItems: &e{used_slots}&f/&e{max_slots}'
+
+lifetime:
+  line: '&#5DB5F1• &fTime: &e{remaining_time}'
+  expired: 'Expired'

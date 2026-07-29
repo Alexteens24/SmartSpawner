@@ -95,6 +95,11 @@ public class SpawnerData {
     private int maxStackSize;
 
     @Getter @Setter
+    private volatile long lifetimeExpiresAt;
+    @Getter @Setter
+    private volatile boolean expired;
+
+    @Getter @Setter
     private VirtualInventory virtualInventory;
     @Getter
     private final Set<Material> filteredItems = new HashSet<>();
@@ -169,6 +174,8 @@ public class SpawnerData {
         this.preferredSortItem = null; // Initialize sort preference as null
         this.accumulatedSellValue = 0.0;
         this.sellValueDirty = true;
+        this.lifetimeExpiresAt = -1L;
+        this.expired = false;
     }
 
     public void loadConfigurationValues() {
@@ -387,8 +394,27 @@ public class SpawnerData {
     public void updateHologramData() {
         if (hologram != null) {
             hologram.updateData(stackSize, entityType, spawnerExp, maxStoredExp,
-                    virtualInventory.getUsedSlots(), maxSpawnerLootSlots);
+                    virtualInventory.getUsedSlots(), maxSpawnerLootSlots,
+                    getRemainingLifetimeMillis(), isTimed(), expired);
         }
+    }
+
+    public boolean isTimed() {
+        return lifetimeExpiresAt >= 0L;
+    }
+
+    public long getRemainingLifetimeMillis() {
+        if (!isTimed() || expired) {
+            return 0L;
+        }
+        if (plugin.getSpawnerLifetimeService() == null) {
+            return Math.max(0L, lifetimeExpiresAt);
+        }
+        return Math.max(0L, lifetimeExpiresAt - plugin.getSpawnerLifetimeService().now());
+    }
+
+    public boolean canGenerateLoot() {
+        return spawnerActive && !expired;
     }
 
     public void reloadHologramData() {

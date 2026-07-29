@@ -63,6 +63,7 @@ import github.nighter.smartspawner.spawner.interactions.type.SpawnEggHandler;
 import github.nighter.smartspawner.spawner.item.SpawnerItemFactory;
 import github.nighter.smartspawner.spawner.lootgen.SpawnerLootGenerator;
 import github.nighter.smartspawner.spawner.lootgen.SpawnerRangeChecker;
+import github.nighter.smartspawner.spawner.lifetime.SpawnerLifetimeService;
 import github.nighter.smartspawner.spawner.natural.NaturalSpawnerListener;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import github.nighter.smartspawner.spawner.sell.SpawnerSellManager;
@@ -90,7 +91,7 @@ import java.util.logging.Level;
 public class SmartSpawner extends JavaPlugin implements SmartSpawnerPlugin {
     @Getter
     private static SmartSpawner instance;
-    public final int DATA_VERSION = 3;
+    public final int DATA_VERSION = 4;
     private final boolean debugMode = getConfig().getBoolean("debug", false);
 
     // Integration Manager
@@ -141,6 +142,7 @@ public class SmartSpawner extends JavaPlugin implements SmartSpawnerPlugin {
     private HopperConfig hopperConfig;
     private SpawnerLocationLockManager spawnerLocationLockManager;
     private SpawnerRemovalService spawnerRemovalService;
+    private SpawnerLifetimeService spawnerLifetimeService;
 
     // Event handlers and utilities
     private NaturalSpawnerListener naturalSpawnerListener;
@@ -278,6 +280,7 @@ public class SmartSpawner extends JavaPlugin implements SmartSpawnerPlugin {
         initializeStorage();
 
         this.spawnerManager = new SpawnerManager(this);
+        this.spawnerLifetimeService = new SpawnerLifetimeService(this);
         this.spawnerLocationLockManager = new SpawnerLocationLockManager(this);
         this.spawnerRemovalService = new SpawnerRemovalService(this);
         this.spawnerManager.reloadAllHolograms();
@@ -612,6 +615,9 @@ public class SmartSpawner extends JavaPlugin implements SmartSpawnerPlugin {
     }
 
     private void saveAndCleanup() {
+        if (spawnerLifetimeService != null) {
+            spawnerLifetimeService.shutdown();
+        }
         if (spawnerManager != null) {
             try {
                 // Use the storage interface for shutdown

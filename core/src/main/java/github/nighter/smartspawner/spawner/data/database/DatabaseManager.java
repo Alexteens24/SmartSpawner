@@ -75,6 +75,8 @@ public class DatabaseManager {
                 max_stack_size INT NOT NULL DEFAULT 1000,
                 last_spawn_time BIGINT NOT NULL DEFAULT 0,
                 is_at_capacity BOOLEAN NOT NULL DEFAULT FALSE,
+                lifetime_expires_at BIGINT NOT NULL DEFAULT -1,
+                lifetime_expired BOOLEAN NOT NULL DEFAULT FALSE,
 
                 -- Player interaction
                 last_interacted_player VARCHAR(64) DEFAULT NULL,
@@ -127,6 +129,8 @@ public class DatabaseManager {
                 max_stack_size INT NOT NULL DEFAULT 1000,
                 last_spawn_time BIGINT NOT NULL DEFAULT 0,
                 is_at_capacity BOOLEAN NOT NULL DEFAULT 0,
+                lifetime_expires_at BIGINT NOT NULL DEFAULT -1,
+                lifetime_expired BOOLEAN NOT NULL DEFAULT 0,
 
                 -- Player interaction
                 last_interacted_player VARCHAR(64) DEFAULT NULL,
@@ -155,7 +159,7 @@ public class DatabaseManager {
     private static final String SCHEMA_META_TABLE = "smartspawner_meta";
     private static final String SCHEMA_VERSION_KEY = "schema_version";
     private static final int LEGACY_SCHEMA_VERSION = 1;
-    private static final int CURRENT_SCHEMA_VERSION = 2;
+    private static final int CURRENT_SCHEMA_VERSION = 3;
 
     private static final String CREATE_META_TABLE_MYSQL = """
             CREATE TABLE IF NOT EXISTS smartspawner_meta (
@@ -357,7 +361,10 @@ public class DatabaseManager {
     }
 
     private int detectInitialSchemaVersion() throws SQLException {
-        return xpColumnsRequireMigration() ? LEGACY_SCHEMA_VERSION : CURRENT_SCHEMA_VERSION;
+        if (xpColumnsRequireMigration()) {
+            return LEGACY_SCHEMA_VERSION;
+        }
+        return lifetimeColumnsExist() ? CURRENT_SCHEMA_VERSION : 2;
     }
 
     private void setSchemaVersion(int version) throws SQLException {
@@ -378,7 +385,62 @@ public class DatabaseManager {
             migrateXpColumnsToBigIntIfNeeded();
             return;
         }
+        if (targetVersion == 3) {
+            addLifetimeColumnsIfNeeded();
+            return;
+        }
         throw new SQLException("No database migration handler found for schema version: " + targetVersion);
+    }
+
+    private boolean lifetimeColumnsExist() throws SQLException {
+        if (storageMode == StorageMode.SQLITE) {
+            try (Connection conn = getConnection();
+                 Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("PRAGMA table_info(smart_spawners)")) {
+                boolean expiry = false;
+                boolean expired = false;
+                while (rs.next()) {
+                    String name = rs.getString("name");
+                    expiry |= "lifetime_expires_at".equalsIgnoreCase(name);
+                    expired |= "lifetime_expired".equalsIgnoreCase(name);
+                }
+                return expiry && expired;
+            }
+        }
+
+        String sql = """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = ?
+                  AND table_name = 'smart_spawners'
+                  AND column_name IN ('lifetime_expires_at', 'lifetime_expired')
+                """;
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, database);
+            try (ResultSet rs = stmt.executeQuery()) {
+                int count = 0;
+                while (rs.next()) count++;
+                return count == 2;
+            }
+        }
+    }
+
+    private void addLifetimeColumnsIfNeeded() throws SQLException {
+        if (lifetimeColumnsExist()) {
+            return;
+        }
+        String sql = storageMode == StorageMode.SQLITE
+                ? "ALTER TABLE smart_spawners ADD COLUMN lifetime_expires_at BIGINT NOT NULL DEFAULT -1"
+                : "ALTER TABLE smart_spawners ADD COLUMN lifetime_expires_at BIGINT NOT NULL DEFAULT -1, "
+                + "ADD COLUMN lifetime_expired BOOLEAN NOT NULL DEFAULT FALSE";
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.execute(sql);
+            if (storageMode == StorageMode.SQLITE) {
+                stmt.execute("ALTER TABLE smart_spawners ADD COLUMN lifetime_expired BOOLEAN NOT NULL DEFAULT 0");
+            }
+        }
     }
 
     private void migrateXpColumnsToBigIntIfNeeded() throws SQLException {

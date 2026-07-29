@@ -13,6 +13,8 @@ import org.bukkit.persistence.PersistentDataType;
 public class SpawnerTypeChecker {
     private static NamespacedKey VANILLA_SPAWNER_KEY;
     private static NamespacedKey ITEM_SPAWNER_KEY;
+    private static NamespacedKey LIFETIME_DURATION_KEY;
+    private static NamespacedKey EMPTY_SPAWNER_KEY;
 
     /**
      * Initializes the spawner type checker with plugin instance
@@ -21,6 +23,8 @@ public class SpawnerTypeChecker {
     public static void init(SmartSpawner plugin) {
         VANILLA_SPAWNER_KEY = new NamespacedKey(plugin, "vanilla_spawner");
         ITEM_SPAWNER_KEY = new NamespacedKey(plugin, "item_spawner_material");
+        LIFETIME_DURATION_KEY = new NamespacedKey(plugin, "lifetime_duration_ms");
+        EMPTY_SPAWNER_KEY = new NamespacedKey(plugin, "empty_spawner");
     }
 
     /**
@@ -80,5 +84,27 @@ public class SpawnerTypeChecker {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    public static boolean isEmptySpawner(ItemStack item) {
+        if (item == null || item.getType() != Material.SPAWNER || !item.hasItemMeta()) {
+            return false;
+        }
+        ItemMeta meta = item.getItemMeta();
+        return meta != null && meta.getPersistentDataContainer().has(
+                EMPTY_SPAWNER_KEY, PersistentDataType.BOOLEAN);
+    }
+
+    public static long getLifetimeDurationMillis(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) {
+            return -1L;
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return -1L;
+        }
+        Long duration = meta.getPersistentDataContainer().get(
+                LIFETIME_DURATION_KEY, PersistentDataType.LONG);
+        return duration == null || duration <= 0L ? -1L : duration;
     }
 }
