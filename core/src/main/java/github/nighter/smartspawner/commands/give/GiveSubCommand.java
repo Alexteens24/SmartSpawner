@@ -10,6 +10,7 @@ import github.nighter.smartspawner.commands.BaseSubCommand;
 import github.nighter.smartspawner.utils.DynamicEntityValidator;
 import github.nighter.smartspawner.spawner.item.SpawnerItemFactory;
 import github.nighter.smartspawner.spawner.lifetime.SpawnerDuration;
+import github.nighter.smartspawner.spawner.lifetime.SpawnerDurationArgumentType;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
@@ -77,18 +78,18 @@ public class GiveSubCommand extends BaseSubCommand {
                         .then(Commands.argument("mobType", StringArgumentType.word())
                                 .suggests(createMobSuggestions())
                                 .executes(context -> executeGive(context, false, 1, -1L))
-                                .then(Commands.argument("duration", StringArgumentType.word())
-                                        .suggests(createDurationSuggestions())
-                                        .executes(context -> executeGive(context, false, 1,
-                                                parseDuration(context))))
                                 .then(Commands.argument("amount", IntegerArgumentType.integer(1, MAX_AMOUNT))
                                         .executes(context -> executeGive(context, false,
                                                 IntegerArgumentType.getInteger(context, "amount"), -1L))
-                                        .then(Commands.argument("duration", StringArgumentType.word())
+                                        .then(Commands.argument("duration", SpawnerDurationArgumentType.duration())
                                                 .suggests(createDurationSuggestions())
                                                 .executes(context -> executeGive(context, false,
                                                         IntegerArgumentType.getInteger(context, "amount"),
-                                                        parseDuration(context)))))));
+                                                        parseDuration(context)))))
+                                .then(Commands.argument("duration", SpawnerDurationArgumentType.duration())
+                                        .suggests(createDurationSuggestions())
+                                        .executes(context -> executeGive(context, false, 1,
+                                                parseDuration(context))))));
     }
 
     private LiteralArgumentBuilder<CommandSourceStack> buildVanillaGiveCommand() {
@@ -140,7 +141,8 @@ public class GiveSubCommand extends BaseSubCommand {
 
     private long parseDuration(CommandContext<CommandSourceStack> context) {
         try {
-            return SpawnerDuration.parseMillis(StringArgumentType.getString(context, "duration"));
+            return SpawnerDuration.parseMillis(
+                    SpawnerDurationArgumentType.getDuration(context, "duration"));
         } catch (IllegalArgumentException | ArithmeticException e) {
             return Long.MIN_VALUE;
         }

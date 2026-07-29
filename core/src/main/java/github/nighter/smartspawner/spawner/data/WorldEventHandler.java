@@ -2,6 +2,7 @@ package github.nighter.smartspawner.spawner.data;
 
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerSnapshot;
 import github.nighter.smartspawner.Scheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
@@ -15,6 +16,7 @@ import org.bukkit.event.world.WorldUnloadEvent;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.List;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
@@ -97,8 +99,20 @@ public class WorldEventHandler implements Listener {
         // Remove world from processed set
         processedWorlds.remove(worldName);
 
-        // Flush pending changes before removing runtime references.
-        // Storage handlers save modified spawners by resolving them from SpawnerManager.
+        Set<SpawnerData> worldSpawners =
+                plugin.getSpawnerManager().getSpawnersInWorld(worldName);
+        if (worldSpawners != null && !worldSpawners.isEmpty()) {
+            List<SpawnerSnapshot> snapshots = worldSpawners.stream()
+                    .map(SpawnerSnapshot::capture)
+                    .toList();
+            plugin.getSpawnerStorage().queueWorldSnapshots(snapshots);
+            // Runtime-only stop: snapshots were captured first so an unload
+            // does not persist a permanently stopped spawner.
+            worldSpawners.forEach(spawner -> spawner.getSpawnerStop().set(true));
+        }
+
+        // The queued UPSERTs own immutable snapshots, so this can remain async
+        // and does not depend on manager entries surviving the unload.
         plugin.getSpawnerStorage().flushChanges();
 
         // Unload spawners from this world

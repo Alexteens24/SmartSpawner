@@ -118,6 +118,8 @@ lifetime:
     message: "&#FF4444Không thể trộn spawner có thời hạn với spawner vĩnh viễn."
   timed_destack_denied:
     message: "&#FF4444Không thể tách stack có thời hạn. Hãy shift-đập toàn bộ stack."
+  expired_storage_not_empty:
+    message: "&#FF4444Hãy dọn hết vật phẩm và EXP trước khi phá spawner đã hết hạn."
 
 # ──────────────────────────────────────────────────────
 #                      /ss hologram

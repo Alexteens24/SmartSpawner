@@ -160,7 +160,7 @@ public class SpawnerClickManager implements Listener {
     private void handleSpawnerInteraction(Player player, Block block, ItemStack heldItem, Material itemType, SpawnerData spawner) {
 
         // Block interaction while a sell is in progress
-        if (spawner.isSelling()) {
+        if (spawner.isStorageOperationInProgress()) {
             messageService.sendMessage(player, "action_in_progress");
             return;
         }

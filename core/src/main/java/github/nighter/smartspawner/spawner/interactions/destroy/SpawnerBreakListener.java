@@ -36,6 +36,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public class SpawnerBreakListener implements Listener {
     private static final int MAX_STACK_SIZE = 64;
+    private static final int MAX_PHYSICAL_DROP_STACKS = 256;
     private static final String DROP_CHANCE_BYPASS_PERMISSION = "smartspawner.break.bypassdropchance";
     private final BreakPluginContext plugin;
     private final MessageService messageService;
@@ -138,6 +139,7 @@ public class SpawnerBreakListener implements Listener {
             return false;
         }
 
+        boolean ownsBreakOperation = false;
         try {
             // Re-verify spawner still exists after acquiring lock
             SpawnerData currentSpawner = spawnerManager.getSpawnerByLocation(location);
@@ -146,15 +148,20 @@ public class SpawnerBreakListener implements Listener {
                 return false;
             }
 
-            // Block break while a sell is in progress
-            if (currentSpawner.isSelling()) {
+            if (!currentSpawner.tryStartStorageOperation(
+                    SpawnerData.StorageOperation.BREAK)) {
                 messageService.sendMessage(player, "action_in_progress");
                 return false;
             }
+            ownsBreakOperation = true;
 
             if (currentSpawner.isExpired()) {
-                plugin.getSpawnerGuiViewManager().closeAllViewersInventory(currentSpawner);
-                giveStoredItemsToPlayer(player, currentSpawner);
+                if (currentSpawner.getVirtualInventory().getTotalItems() > 0L
+                        || currentSpawner.getSpawnerExp() > 0L) {
+                    messageService.sendMessage(player,
+                            "lifetime.expired_storage_not_empty");
+                    return false;
+                }
                 cleanupSpawner(block, currentSpawner);
                 if (player.getGameMode() != GameMode.CREATIVE) {
                     reduceDurability(tool, player, breakConfig.getDurabilityLoss());
@@ -162,17 +169,10 @@ public class SpawnerBreakListener implements Listener {
                 return true;
             }
 
-            boolean wantsStackBreak = player.isSneaking() && currentSpawner.getStackSize() > 1;
-            if (currentSpawner.isTimed() && currentSpawner.getStackSize() > 1
-                    && !(wantsStackBreak && breakConfig.isSneakBreakEnabled())) {
-                messageService.sendMessage(player, "lifetime.timed_destack_denied");
-                return false;
-            }
+            boolean wantsStackBreak = currentSpawner.isTimed()
+                    ? currentSpawner.getStackSize() > 1
+                    : player.isSneaking() && currentSpawner.getStackSize() > 1;
             boolean bypassDropChance = hasDropChanceBypass(player);
-            if (wantsStackBreak && breakConfig.isSneakBreakEnabled() && !bypassDropChance && hasSmartSpawnerDropChance(currentSpawner)) {
-                messageService.sendMessage(player, "sneak_break_blocked");
-                return false;
-            }
 
             // Track player interaction for last interaction field
             currentSpawner.updateLastInteractedPlayer(player.getName());
@@ -180,13 +180,19 @@ public class SpawnerBreakListener implements Listener {
             plugin.getSpawnerGuiViewManager().closeAllViewersInventory(currentSpawner);
 
             SpawnerBreakResult result = processDrops(player, location, currentSpawner,
-                    wantsStackBreak && breakConfig.isSneakBreakEnabled(), bypassDropChance);
+                    currentSpawner.isTimed()
+                            ? wantsStackBreak
+                            : wantsStackBreak && breakConfig.isSneakBreakEnabled(),
+                    bypassDropChance);
             if (!result.isSuccess()) {
                 return false;
             }
 
             if (result.isFullyRemoved()) {
                 // Option B: only trigger break-time auto claim/sell when the spawner is fully removed.
+                currentSpawner.finishStorageOperation(
+                        SpawnerData.StorageOperation.BREAK);
+                ownsBreakOperation = false;
                 boolean cleanupDeferred = maybeAutoSellAndClaimExp(player, currentSpawner,
                     () -> applyBreakResult(block, currentSpawner, player, result));
                 if (!cleanupDeferred) {
@@ -201,6 +207,10 @@ public class SpawnerBreakListener implements Listener {
             }
             return true;
         } finally {
+            if (ownsBreakOperation) {
+                spawner.finishStorageOperation(
+                        SpawnerData.StorageOperation.BREAK);
+            }
             locationLockManager.unlock(location);
         }
     }
@@ -335,11 +345,16 @@ public class SpawnerBreakListener implements Listener {
             return new SpawnerBreakResult(false, dropAmount, 0, 0, false, template);
         }
 
+        int actualDropAmount = bypassDropChance ? dropAmount : rollDroppedAmount(dropAmount, getSmartSpawnerDropChance(spawner));
+        long physicalStacks = (actualDropAmount + (long) Math.max(1, template.getMaxStackSize()) - 1L)
+                / Math.max(1, template.getMaxStackSize());
+        if (physicalStacks > MAX_PHYSICAL_DROP_STACKS) {
+            messageService.sendMessage(player, "break_too_many_drops");
+            return new SpawnerBreakResult(false, 0, 0, 0, false, template);
+        }
         if (!shouldDeleteSpawner) {
             spawner.setStackSize(newStackSize);
         }
-
-        int actualDropAmount = bypassDropChance ? dropAmount : rollDroppedAmount(dropAmount, getSmartSpawnerDropChance(spawner));
         return new SpawnerBreakResult(true, actualDropAmount, dropAmount, breakConfig.getDurabilityLoss(), shouldDeleteSpawner, template);
     }
 
@@ -418,6 +433,15 @@ public class SpawnerBreakListener implements Listener {
         }
         if (dropChance >= 100.0) {
             return amount;
+        }
+
+        double probability = dropChance / 100.0;
+        if (amount > 100_000) {
+            double mean = amount * probability;
+            double deviation = Math.sqrt(amount * probability * (1.0 - probability));
+            long sampled = Math.round(mean
+                    + ThreadLocalRandom.current().nextGaussian() * deviation);
+            return (int) Math.clamp(sampled, 0L, (long) amount);
         }
 
         int droppedAmount = 0;
@@ -525,7 +549,7 @@ public class SpawnerBreakListener implements Listener {
             return false;
         }
 
-        if (spawner.getVirtualInventory().getUsedSlots() > 0) {
+        if (spawner.getVirtualInventory().getTotalItems() > 0L) {
             // Serialize the spawner removal behind sell completion to avoid delete/modify races
             // with the async sell task. The break itself must always proceed afterwards: auto-sell
             // is a best-effort bonus, so a sell that removes nothing (items have no sell value, the
@@ -609,7 +633,7 @@ public class SpawnerBreakListener implements Listener {
         }
 
         public int getDurabilityLoss() {
-            return removedAmount * baseDurabilityLoss;
+            return baseDurabilityLoss;
         }
     }
 

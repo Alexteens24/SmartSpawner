@@ -3,6 +3,7 @@ package github.nighter.smartspawner.spawner.data;
 import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.Scheduler;
 import github.nighter.smartspawner.spawner.data.storage.SpawnerStorage;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerSnapshot;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import org.bukkit.*;
 import java.util.*;
@@ -85,13 +86,20 @@ public class SpawnerManager {
         String worldName = spawner.getSpawnerLocation().getWorld().getName();
         worldIndex.computeIfAbsent(worldName, k -> new HashSet<>()).add(spawner);
 
-        // Queue for saving
-        spawnerStorage.queueSpawnerForSaving(id);
+        // Creation is the only mutation allowed to replace a deletion
+        // tombstone for a reused ID.
+        spawnerStorage.markSpawnerCreated(SpawnerSnapshot.capture(spawner));
+        if (plugin.getSpawnerLifetimeService() != null) {
+            plugin.getSpawnerLifetimeService().registerOrReschedule(spawner);
+        }
     }
 
     public void removeSpawner(String id) {
         SpawnerData spawner = spawners.get(id);
         if (spawner != null) {
+            if (plugin.getSpawnerLifetimeService() != null) {
+                plugin.getSpawnerLifetimeService().unregister(id);
+            }
             Location loc = spawner.getSpawnerLocation();
             // Run hologram removal on location thread
             Scheduler.runLocationTask(loc, spawner::removeHologram);
@@ -145,6 +153,9 @@ public class SpawnerManager {
         // Add to world index
         String worldName = spawner.getSpawnerLocation().getWorld().getName();
         worldIndex.computeIfAbsent(worldName, k -> new HashSet<>()).add(spawner);
+        if (plugin.getSpawnerLifetimeService() != null) {
+            plugin.getSpawnerLifetimeService().registerOrReschedule(spawner);
+        }
     }
 
     public Set<SpawnerData> getSpawnersInWorld(String worldName) {
@@ -168,6 +179,9 @@ public class SpawnerManager {
         Set<SpawnerData> snapshot = new HashSet<>(worldSpawners);
 
         for (SpawnerData spawner : snapshot) {
+            if (plugin.getSpawnerLifetimeService() != null) {
+                plugin.getSpawnerLifetimeService().unregister(spawner.getSpawnerId());
+            }
             spawner.removeHologram();
             removedSpawnerIds.add(spawner.getSpawnerId());
             spawners.remove(spawner.getSpawnerId());
@@ -214,6 +228,7 @@ public class SpawnerManager {
         SpawnerData spawner = spawners.get(spawnerId);
         if (spawner != null) {
             Location loc = spawner.getSpawnerLocation();
+            spawner.getSpawnerStop().set(true);
 
             // Add to confirmed list
             confirmedGhostSpawners.add(spawnerId);

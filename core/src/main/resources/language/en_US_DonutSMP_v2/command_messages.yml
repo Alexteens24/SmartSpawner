@@ -118,6 +118,8 @@ lifetime:
     message: "&#FF4444Timed and permanent spawners cannot be mixed."
   timed_destack_denied:
     message: "&#FF4444Timed stacks cannot be split. Sneak-break the full stack."
+  expired_storage_not_empty:
+    message: "&#FF4444Empty the expired spawner's items and EXP before breaking it."
 
 # ──────────────────────────────────────────────────────
 #                      /ss hologram

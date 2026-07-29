@@ -137,6 +137,10 @@ drop_failed:
   action_bar: '&#FF4444The spawner did not drop.'
   sound: block.note_block.pling
 
+break_too_many_drops:
+  message: '&#FF4444This stack would create too many item entities. Reduce it before breaking.'
+  sound: block.note_block.pling
+
 sneak_break_blocked:
   message: '&#FF4444You cannot break the whole stack when this spawner has drop chance.'
   action_bar: '&#FF4444Cannot break whole stack.'

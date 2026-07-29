@@ -55,7 +55,7 @@ public class SpawnerStackHandler {
 
     public void handleSpawnerStacking(Player player, Block block, SpawnerData spawnerData, ItemStack itemInHand) {
         // Block stacking while a sell is in progress
-        if (spawnerData.isSelling()) {
+        if (spawnerData.isStorageOperationInProgress()) {
             messageService.sendMessage(player, "action_in_progress");
             return;
         }
@@ -241,6 +241,7 @@ public class SpawnerStackHandler {
         targetSpawner.setStackSize(newStack);
         if (itemDuration > 0L) {
             targetSpawner.setLifetimeExpiresAt(newExpiry);
+            plugin.getSpawnerLifetimeService().registerOrReschedule(targetSpawner);
         }
 
         // Mark spawner as modified for database save

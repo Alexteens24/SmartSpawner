@@ -183,6 +183,48 @@ public class DatabaseManager {
             )
             """;
 
+    private static final String CREATE_SERVER_META_TABLE_MYSQL = """
+            CREATE TABLE IF NOT EXISTS smartspawner_server_meta (
+                server_name VARCHAR(64) NOT NULL,
+                meta_key VARCHAR(64) NOT NULL,
+                meta_value VARCHAR(191) NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (server_name, meta_key)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """;
+
+    private static final String CREATE_SERVER_META_TABLE_SQLITE = """
+            CREATE TABLE IF NOT EXISTS smartspawner_server_meta (
+                server_name VARCHAR(64) NOT NULL,
+                meta_key VARCHAR(64) NOT NULL,
+                meta_value VARCHAR(191) NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (server_name, meta_key)
+            )
+            """;
+
+    private static final String CREATE_INVENTORY_BACKUP_TABLE_MYSQL = """
+            CREATE TABLE IF NOT EXISTS smart_spawners_inventory_pre_ssinv1 (
+                server_name VARCHAR(64) NOT NULL,
+                spawner_id VARCHAR(64) NOT NULL,
+                inventory_data MEDIUMTEXT NOT NULL,
+                backed_up_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (server_name, spawner_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """;
+
+    private static final String CREATE_INVENTORY_BACKUP_TABLE_SQLITE = """
+            CREATE TABLE IF NOT EXISTS smart_spawners_inventory_pre_ssinv1 (
+                server_name VARCHAR(64) NOT NULL,
+                spawner_id VARCHAR(64) NOT NULL,
+                inventory_data TEXT NOT NULL,
+                backed_up_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (server_name, spawner_id)
+            )
+            """;
+
+    private volatile long maxAllowedPacket = -1L;
+
     public DatabaseManager(SmartSpawner plugin, StorageMode storageMode) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
@@ -216,6 +258,7 @@ public class DatabaseManager {
             setupDataSource();
             createTables();
             createSchemaMetaTable();
+            createRuntimeSupportTables();
             runSchemaMigrations();
             logger.info("Database connection pool initialized successfully.");
             return true;
@@ -323,6 +366,18 @@ public class DatabaseManager {
         }
     }
 
+    private void createRuntimeSupportTables() throws SQLException {
+        String serverMeta = storageMode == StorageMode.SQLITE
+                ? CREATE_SERVER_META_TABLE_SQLITE : CREATE_SERVER_META_TABLE_MYSQL;
+        String backup = storageMode == StorageMode.SQLITE
+                ? CREATE_INVENTORY_BACKUP_TABLE_SQLITE : CREATE_INVENTORY_BACKUP_TABLE_MYSQL;
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.execute(serverMeta);
+            stmt.execute(backup);
+        }
+    }
+
     private void runSchemaMigrations() throws SQLException {
         Integer currentVersion = getSchemaVersionFromMeta();
         if (currentVersion == null) {
@@ -373,7 +428,100 @@ public class DatabaseManager {
         if (!lifetimeColumnsExist()) {
             return 2;
         }
-        return totalItemsColumnExists() ? CURRENT_SCHEMA_VERSION : 3;
+        // total_items was introduced by schema v4. Do not return the current
+        // constant here: otherwise a future development bump would silently
+        // misclassify a v4 database with missing metadata.
+        return totalItemsColumnExists() ? 4 : 3;
+    }
+
+    public void backupLegacyInventoryRow(String targetServer,
+                                         String spawnerId,
+                                         String inventoryData) throws SQLException {
+        if (inventoryData == null
+                || inventoryData.isEmpty()
+                || inventoryData.startsWith(SpawnerInventoryCodec.PREFIX)) {
+            return;
+        }
+        String sql = storageMode == StorageMode.SQLITE
+                ? "INSERT OR IGNORE INTO smart_spawners_inventory_pre_ssinv1 "
+                        + "(server_name, spawner_id, inventory_data) VALUES (?, ?, ?)"
+                : "INSERT IGNORE INTO smart_spawners_inventory_pre_ssinv1 "
+                        + "(server_name, spawner_id, inventory_data) VALUES (?, ?, ?)";
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, targetServer);
+            stmt.setString(2, spawnerId);
+            stmt.setString(3, inventoryData);
+            stmt.executeUpdate();
+        }
+    }
+
+    public void validateInventoryPayloadSize(String payload) throws SQLException {
+        if (payload == null) {
+            return;
+        }
+        // MEDIUMTEXT holds 16,777,215 bytes. ssinv payloads are ASCII, so the
+        // Java character count is also the encoded byte count.
+        if (payload.length() > 16_777_215) {
+            throw new SQLException("Encoded inventory exceeds MEDIUMTEXT capacity: "
+                    + payload.length() + " bytes");
+        }
+        if (storageMode == StorageMode.SQLITE) {
+            return;
+        }
+        long packet = maxAllowedPacket;
+        if (packet < 0L) {
+            try (Connection conn = getConnection();
+                 Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT @@max_allowed_packet")) {
+                packet = rs.next() ? rs.getLong(1) : 0L;
+                maxAllowedPacket = packet;
+            }
+        }
+        // Leave 64 KiB for SQL protocol and the remaining row columns.
+        if (packet > 0L && payload.length() + 65_536L >= packet) {
+            throw new SQLException("Encoded inventory payload (" + payload.length()
+                    + " bytes) does not fit max_allowed_packet (" + packet + " bytes)");
+        }
+    }
+
+    public long loadServerOnlineTimeMillis(String targetServer) throws SQLException {
+        String sql = "SELECT meta_value FROM smartspawner_server_meta "
+                + "WHERE server_name = ? AND meta_key = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, targetServer);
+            stmt.setString(2, "lifetime_online_time_millis");
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return -1L;
+                }
+                try {
+                    return Math.max(0L, Long.parseLong(rs.getString(1)));
+                } catch (NumberFormatException invalid) {
+                    throw new SQLException("Invalid lifetime clock value", invalid);
+                }
+            }
+        }
+    }
+
+    public void saveServerOnlineTimeMillis(String targetServer, long value)
+            throws SQLException {
+        String sql = storageMode == StorageMode.SQLITE
+                ? "INSERT INTO smartspawner_server_meta "
+                        + "(server_name, meta_key, meta_value) VALUES (?, ?, ?) "
+                        + "ON CONFLICT(server_name, meta_key) DO UPDATE SET "
+                        + "meta_value = excluded.meta_value"
+                : "INSERT INTO smartspawner_server_meta "
+                        + "(server_name, meta_key, meta_value) VALUES (?, ?, ?) "
+                        + "ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)";
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, targetServer);
+            stmt.setString(2, "lifetime_online_time_millis");
+            stmt.setString(3, String.valueOf(Math.max(0L, value)));
+            stmt.executeUpdate();
+        }
     }
 
     private void setSchemaVersion(int version) throws SQLException {

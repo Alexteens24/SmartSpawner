@@ -14,6 +14,7 @@ import github.nighter.smartspawner.spawner.data.SpawnerManager;
 import github.nighter.smartspawner.spawner.properties.VirtualInventory;
 import github.nighter.smartspawner.language.LanguageManager;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
+import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import org.bukkit.*;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -83,7 +84,7 @@ public class SpawnerStorageAction implements Listener {
         // reopenPreviousGui callback) before the async sell's item-removal step has run,
         // which would otherwise allow items to be taken from the virtual inventory twice –
         // once by the player and once by applySellResult.
-        if (spawner.isSelling()) {
+        if (spawner.isStorageOperationInProgress()) {
             plugin.getMessageService().sendMessage(player, "action_in_progress");
             return;
         }
@@ -331,63 +332,51 @@ public class SpawnerStorageAction implements Listener {
      */
     private void transferToPlayerInventory(Player player, ItemStack clickedItem, int amountToTake,
                                           Inventory storageInv, SpawnerData spawner, StoragePageHolder holder) {
-        PlayerInventory playerInv = player.getInventory();
-        ItemStack toTransfer = clickedItem.clone();
-        toTransfer.setAmount(amountToTake);
-
-        int amountMoved = 0;
-        int remaining = amountToTake;
-
-        // Optimize: Try to stack with existing items first (more efficient)
-        for (int i = 0; i < 36 && remaining > 0; i++) {
-            ItemStack slot = playerInv.getItem(i);
-
-            if (slot != null && slot.getType() != Material.AIR && slot.isSimilar(toTransfer)) {
-                // Found similar item - try to stack
-                int space = slot.getMaxStackSize() - slot.getAmount();
-                if (space > 0) {
-                    int add = Math.min(space, remaining);
-                    slot.setAmount(slot.getAmount() + add);
-                    amountMoved += add;
-                    remaining -= add;
-                }
-            }
+        if (!spawner.tryStartStorageOperation(
+                SpawnerData.StorageOperation.CLAIM_ITEMS)) {
+            messageService.sendMessage(player, "action_in_progress");
+            return;
         }
-
-        // Then fill empty slots
-        for (int i = 0; i < 36 && remaining > 0; i++) {
-            ItemStack slot = playerInv.getItem(i);
-
-            if (slot == null || slot.getType() == Material.AIR) {
-                int stackSize = Math.min(remaining, toTransfer.getMaxStackSize());
-                ItemStack newStack = toTransfer.clone();
-                newStack.setAmount(stackSize);
-                playerInv.setItem(i, newStack);
-                amountMoved += stackSize;
-                remaining -= stackSize;
-            }
-        }
-
-        // Update VirtualInventory if any items were moved
-        if (amountMoved > 0) {
-            ItemStack removed = toTransfer.clone();
-            removed.setAmount(amountMoved);
-
-            if (spawner.removeItemsAndUpdateSellValue(List.of(removed))) {
-                // Update display efficiently
+        try {
+            ItemStack requestedItem = clickedItem.clone();
+            requestedItem.setAmount(amountToTake);
+            Map<ItemSignature, Long> reserved =
+                    spawner.reserveItems(toRequested(List.of(requestedItem)));
+            if (reserved.isEmpty()) {
                 updatePageAfterRemoval(player, storageInv, spawner, holder);
-
-                // Single sound effect
-                player.playSound(player.getLocation(), Sound.ENTITY_ITEM_PICKUP, 0.5f, 1.0f);
-
-                // Notify if inventory was full
-                if (remaining > 0) {
-                    messageService.sendMessage(player, "inventory_full");
-                }
+                return;
             }
-        } else {
-            // No items moved - inventory full
-            messageService.sendMessage(player, "inventory_full");
+
+            List<ItemStack> physical = materialize(reserved);
+            Map<Integer, ItemStack> leftovers;
+            try {
+                leftovers = addToPlayerInventoryTransactional(player, physical);
+            } catch (RuntimeException deliveryFailure) {
+                spawner.restoreReservedItems(reserved);
+                plugin.getLogger().log(java.util.logging.Level.WARNING,
+                        "Could not deliver a transactional storage claim",
+                        deliveryFailure);
+                messageService.sendMessage(player, "action_failed");
+                return;
+            }
+            Map<ItemSignature, Long> rollback =
+                    toRequested(leftovers.values());
+            if (!rollback.isEmpty()) {
+                spawner.restoreReservedItems(rollback);
+                messageService.sendMessage(player, "inventory_full");
+            }
+
+            long delivered = totalAmount(reserved) - totalAmount(rollback);
+            if (delivered > 0L) {
+                updatePageAfterRemoval(player, storageInv, spawner, holder);
+                player.playSound(player.getLocation(),
+                        Sound.ENTITY_ITEM_PICKUP, 0.5f, 1.0f);
+            } else {
+                messageService.sendMessage(player, "inventory_full");
+            }
+        } finally {
+            spawner.finishStorageOperation(
+                    SpawnerData.StorageOperation.CLAIM_ITEMS);
         }
     }
 
@@ -459,16 +448,40 @@ public class SpawnerStorageAction implements Listener {
         if (SpawnerDropAllEvent.getHandlerList().getRegisteredListeners().length != 0) {
             SpawnerDropAllEvent event = new SpawnerDropAllEvent(player, spawner.getSpawnerLocation(), pageItems);
             Bukkit.getPluginManager().callEvent(event);
-            if (event.isCancelled()) return false;
+            if (event.isCancelled()) {
+                updatePageContent(player, spawner,
+                        holder.getCurrentPage(), inventory);
+                return false;
+            }
             pageItems = event.getItems();
         }
 
         final int itemsFound = itemsFoundCount;
 
-        // Remove from VirtualInventory
-        spawner.removeItemsAndUpdateSellValue(pageItems);
-
-        dropItemsInDirection(player, pageItems);
+        if (!spawner.tryStartStorageOperation(
+                SpawnerData.StorageOperation.DROP_ITEMS)) {
+            messageService.sendMessage(player, "action_in_progress");
+            updatePageContent(player, spawner,
+                    holder.getCurrentPage(), inventory);
+            return false;
+        }
+        Map<ItemSignature, Long> reserved;
+        try {
+            reserved = spawner.reserveItems(toRequested(pageItems));
+            if (reserved.isEmpty()) {
+                updatePageContent(player, spawner, holder.getCurrentPage(), inventory);
+                return false;
+            }
+            List<ItemStack> reservedStacks = materialize(reserved);
+            int firstNotDropped = dropItemsInDirectionTransactional(player, reservedStacks);
+            if (firstNotDropped < reservedStacks.size()) {
+                spawner.restoreReservedItems(toRequested(
+                        reservedStacks.subList(firstNotDropped, reservedStacks.size())));
+            }
+        } finally {
+            spawner.finishStorageOperation(
+                    SpawnerData.StorageOperation.DROP_ITEMS);
+        }
 
         int newTotalPages = calculateTotalPages(spawner);
         if (holder.getCurrentPage() > newTotalPages) {
@@ -535,6 +548,42 @@ public class SpawnerStorageAction implements Listener {
 
             droppedItem.setVelocity(velocity);
         }
+    }
+
+    private int dropItemsInDirectionTransactional(Player player, List<ItemStack> items) {
+        if (items.isEmpty()) {
+            return 0;
+        }
+        Location playerLoc = player.getLocation();
+        World world = player.getWorld();
+        UUID playerUUID = player.getUniqueId();
+        double yaw = Math.toRadians(playerLoc.getYaw());
+        double pitch = Math.toRadians(playerLoc.getPitch());
+        double sinYaw = -Math.sin(yaw);
+        double cosYaw = Math.cos(yaw);
+        double cosPitch = Math.cos(pitch);
+        double sinPitch = -Math.sin(pitch);
+        Location dropLocation = playerLoc.clone().add(sinYaw * 0.3, 1.2, cosYaw * 0.3);
+        Vector velocity = new Vector(
+                sinYaw * cosPitch * 0.3,
+                sinPitch * 0.3 + 0.1,
+                cosYaw * cosPitch * 0.3);
+
+        int dropped = 0;
+        try {
+            for (ItemStack item : items) {
+                Item entity = world.dropItem(dropLocation, item, drop -> {
+                    drop.setThrower(playerUUID);
+                    drop.setPickupDelay(40);
+                });
+                dropped++;
+                entity.setVelocity(velocity);
+            }
+        } catch (RuntimeException failure) {
+            plugin.getLogger().log(java.util.logging.Level.WARNING,
+                    "Could not finish transactional storage drop", failure);
+        }
+        return dropped;
     }
 
 
@@ -713,8 +762,19 @@ public class SpawnerStorageAction implements Listener {
             sourceItems = event.getItems();
         }
 
-        // Transfer items and update VirtualInventory
-        TransferResult result = transferItems(player, sourceInventory, sourceItems, virtualInv);
+        if (!spawner.tryStartStorageOperation(
+                SpawnerData.StorageOperation.CLAIM_ITEMS)) {
+            messageService.sendMessage(player, "action_in_progress");
+            return false;
+        }
+
+        TransferResult result;
+        try {
+            result = transferItems(player, sourceInventory, sourceItems, virtualInv);
+        } finally {
+            spawner.finishStorageOperation(
+                    SpawnerData.StorageOperation.CLAIM_ITEMS);
+        }
         sendTransferMessage(player, result);
         player.updateInventory();
 
@@ -773,76 +833,108 @@ public class SpawnerStorageAction implements Listener {
 
     private TransferResult transferItems(Player player, Inventory sourceInventory,
                                          Map<Integer, ItemStack> sourceItems, VirtualInventory virtualInv) {
-        boolean anyItemMoved = false;
-        boolean inventoryFull = false;
-        PlayerInventory playerInv = player.getInventory();
-        int totalAmountMoved = 0;
-        List<ItemStack> itemsToRemove = new ArrayList<>();
-
-        for (Map.Entry<Integer, ItemStack> entry : sourceItems.entrySet()) {
-            int sourceSlot = entry.getKey();
-            ItemStack itemToMove = entry.getValue();
-
-            int amountToMove = itemToMove.getAmount();
-            int amountMoved = 0;
-
-            for (int i = 0; i < 36 && amountToMove > 0; i++) {
-                ItemStack targetItem = playerInv.getItem(i);
-
-                if (targetItem == null || targetItem.getType() == Material.AIR) {
-                    ItemStack newStack = itemToMove.clone();
-                    newStack.setAmount(Math.min(amountToMove, itemToMove.getMaxStackSize()));
-                    playerInv.setItem(i, newStack);
-                    amountMoved += newStack.getAmount();
-                    amountToMove -= newStack.getAmount();
-                    anyItemMoved = true;
-                }
-                else if (targetItem.isSimilar(itemToMove)) {
-                    int spaceInStack = targetItem.getMaxStackSize() - targetItem.getAmount();
-                    if (spaceInStack > 0) {
-                        int addAmount = Math.min(spaceInStack, amountToMove);
-                        targetItem.setAmount(targetItem.getAmount() + addAmount);
-                        amountMoved += addAmount;
-                        amountToMove -= addAmount;
-                        anyItemMoved = true;
-                    }
-                }
-            }
-
-            if (amountMoved > 0) {
-                totalAmountMoved += amountMoved;
-
-                ItemStack movedItem = itemToMove.clone();
-                movedItem.setAmount(amountMoved);
-                itemsToRemove.add(movedItem);
-
-                if (amountMoved == itemToMove.getAmount()) {
-                    sourceInventory.setItem(sourceSlot, null);
-                } else {
-                    ItemStack remaining = itemToMove.clone();
-                    remaining.setAmount(itemToMove.getAmount() - amountMoved);
-                    sourceInventory.setItem(sourceSlot, remaining);
-                    inventoryFull = true;
-                }
-            }
-
-            if (inventoryFull) {
-                break;
-            }
+        StoragePageHolder holder =
+                (StoragePageHolder) sourceInventory.getHolder(false);
+        SpawnerData spawnerData = holder.getSpawnerData();
+        Map<ItemSignature, Long> reserved =
+                spawnerData.reserveItems(toRequested(sourceItems.values()));
+        if (reserved.isEmpty()) {
+            updatePageContent(player, spawnerData,
+                    holder.getCurrentPage(), sourceInventory);
+            return new TransferResult(false, false, 0);
         }
 
-        // Update VirtualInventory
-        if (!itemsToRemove.isEmpty()) {
-            StoragePageHolder holder = (StoragePageHolder) sourceInventory.getHolder(false);
-            SpawnerData spawnerData = holder.getSpawnerData();
-
-            spawnerData.removeItemsAndUpdateSellValue(itemsToRemove);
-            spawnerData.updateHologramData();
-
-            holder.updateOldUsedSlots();
+        Map<Integer, ItemStack> leftovers;
+        try {
+            leftovers = addToPlayerInventoryTransactional(
+                    player, materialize(reserved));
+        } catch (RuntimeException deliveryFailure) {
+            spawnerData.restoreReservedItems(reserved);
+            plugin.getLogger().log(java.util.logging.Level.WARNING,
+                    "Could not deliver transactional take-all",
+                    deliveryFailure);
+            return new TransferResult(false, false, 0);
+        }
+        Map<ItemSignature, Long> rollback = toRequested(leftovers.values());
+        if (!rollback.isEmpty()) {
+            spawnerData.restoreReservedItems(rollback);
         }
 
-        return new TransferResult(anyItemMoved, inventoryFull, totalAmountMoved);
+        long moved = Math.max(0L,
+                totalAmount(reserved) - totalAmount(rollback));
+        updatePageContent(player, spawnerData,
+                holder.getCurrentPage(), sourceInventory);
+        spawnerData.updateHologramData();
+        holder.updateOldUsedSlots();
+        return new TransferResult(
+                moved > 0L,
+                !rollback.isEmpty(),
+                (int) Math.min(Integer.MAX_VALUE, moved));
+    }
+
+    private Map<ItemSignature, Long> toRequested(Collection<ItemStack> items) {
+        Map<ItemSignature, Long> requested = new LinkedHashMap<>();
+        if (items == null) {
+            return requested;
+        }
+        for (ItemStack item : items) {
+            if (item == null || item.getType() == Material.AIR
+                    || item.getAmount() <= 0) {
+                continue;
+            }
+            requested.merge(new ItemSignature(item),
+                    (long) item.getAmount(), SpawnerStorageAction::saturatingAdd);
+        }
+        return requested;
+    }
+
+    private List<ItemStack> materialize(Map<ItemSignature, Long> items) {
+        List<ItemStack> result = new ArrayList<>();
+        for (Map.Entry<ItemSignature, Long> entry : items.entrySet()) {
+            long remaining = entry.getValue();
+            int max = Math.max(1, entry.getKey().getMaxStackSize());
+            while (remaining > 0L) {
+                ItemStack stack = entry.getKey().getTemplate();
+                int amount = (int) Math.min(remaining, max);
+                stack.setAmount(amount);
+                result.add(stack);
+                remaining -= amount;
+            }
+        }
+        return result;
+    }
+
+    private long totalAmount(Map<ItemSignature, Long> items) {
+        long total = 0L;
+        for (Long amount : items.values()) {
+            if (amount != null && amount > 0L) {
+                total = saturatingAdd(total, amount);
+            }
+        }
+        return total;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (right > 0L && left > Long.MAX_VALUE - right) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
+    }
+
+    private Map<Integer, ItemStack> addToPlayerInventoryTransactional(
+            Player player, List<ItemStack> items) {
+        PlayerInventory inventory = player.getInventory();
+        ItemStack[] before = inventory.getStorageContents();
+        ItemStack[] snapshot = new ItemStack[before.length];
+        for (int i = 0; i < before.length; i++) {
+            snapshot[i] = before[i] == null ? null : before[i].clone();
+        }
+        try {
+            return inventory.addItem(items.toArray(ItemStack[]::new));
+        } catch (RuntimeException failure) {
+            inventory.setStorageContents(snapshot);
+            throw failure;
+        }
     }
 
 

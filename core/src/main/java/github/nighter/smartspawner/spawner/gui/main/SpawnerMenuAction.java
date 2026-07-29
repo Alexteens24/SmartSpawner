@@ -319,46 +319,23 @@ public class SpawnerMenuAction implements Listener {
     }
 
     public boolean tryCollectExpForPlayer(Player player, SpawnerData spawner) {
-        long exp = spawner.getSpawnerExp();
-        if (exp <= 0) {
-            messageService.sendMessage(player, "no_exp");
+        if (!spawner.tryStartStorageOperation(
+                SpawnerData.StorageOperation.CLAIM_EXP)) {
+            messageService.sendMessage(player, "action_in_progress");
             return false;
         }
-
-        long initialExp = exp;
-        long expUsedForMending = 0;
-
-        if (Config.get().isAllowExpMending()) {
-            expUsedForMending = applyMendingFromExp(player, exp);
-            exp -= expUsedForMending;
-        }
-
-        if (auraSkills != null) {
-            giveAuraSkillsXp(player, spawner, initialExp);
-        }
-
-        if (exp > 0) {
-            if (SpawnerExpClaimEvent.getHandlerList().getRegisteredListeners().length != 0) {
-                SpawnerExpClaimEvent expClaimEvent = new SpawnerExpClaimEvent(player, spawner.getSpawnerLocation(), exp);
-                Bukkit.getPluginManager().callEvent(expClaimEvent);
-                if (expClaimEvent.isCancelled()) return false;
-                if (exp != expClaimEvent.getExpAmount()) exp = expClaimEvent.getExpAmount();
+        try {
+            long[] claimed = collectExpOwned(player, spawner);
+            if (claimed[0] <= 0L) {
+                messageService.sendMessage(player, "no_exp");
+                return false;
             }
-            givePlayerExpInChunks(player, exp);
+            sendExpCollectionMessage(player, claimed[0], claimed[1]);
+            return true;
+        } finally {
+            spawner.finishStorageOperation(
+                    SpawnerData.StorageOperation.CLAIM_EXP);
         }
-
-        spawner.setSpawnerExp(0);
-        plugin.getSpawnerManager().markSpawnerModified(spawner.getSpawnerId());
-        spawnerGuiViewManager.updateSpawnerMenuViewers(spawner);
-
-        if (spawner.getSpawnerExp() < spawner.getMaxStoredExp()) {
-            if (spawner.getIsAtCapacity()) {
-                spawner.setIsAtCapacity(false);
-            }
-        }
-
-        sendExpCollectionMessage(player, initialExp, expUsedForMending);
-        return true;
     }
 
     public void handleExpBottleClick(Player player, SpawnerData spawner, boolean isSell) {
@@ -511,51 +488,57 @@ public class SpawnerMenuAction implements Listener {
      * @return long[] { initialExp, expUsedForMending }, where initialExp == 0 means no exp was collected.
      */
     public long[] collectExpSilently(Player player, SpawnerData spawner) {
-        long exp = spawner.getSpawnerExp();
-        if (exp <= 0) {
-            return new long[]{0, 0};
+        return collectExpOwned(player, spawner);
+    }
+
+    private long[] collectExpOwned(Player player, SpawnerData spawner) {
+        long available = spawner.getSpawnerExp();
+        if (available <= 0L) {
+            return new long[]{0L, 0L};
         }
 
-        long initialExp = exp;
-        long expUsedForMending = 0;
-
-        // Apply mending first if enabled
-        if (Config.get().isAllowExpMending()) {
-            expUsedForMending = applyMendingFromExp(player, exp);
-            exp -= expUsedForMending;
-        }
-
-        // Give AuraSkills XP if integration is enabled
-        if (auraSkills != null) {
-            giveAuraSkillsXp(player, spawner, initialExp);
-        }
-
-        // Give remaining exp to player
-        if (exp > 0) {
-            if (SpawnerExpClaimEvent.getHandlerList().getRegisteredListeners().length != 0) {
-                SpawnerExpClaimEvent expClaimEvent = new SpawnerExpClaimEvent(player, spawner.getSpawnerLocation(), exp);
-                Bukkit.getPluginManager().callEvent(expClaimEvent);
-                if (expClaimEvent.isCancelled()) return new long[]{0, 0};
-                if (exp != expClaimEvent.getExpAmount()) exp = expClaimEvent.getExpAmount();
+        long requested = available;
+        if (SpawnerExpClaimEvent.getHandlerList().getRegisteredListeners().length != 0) {
+            SpawnerExpClaimEvent event = new SpawnerExpClaimEvent(
+                    player, spawner.getSpawnerLocation(), requested);
+            Bukkit.getPluginManager().callEvent(event);
+            if (event.isCancelled()) {
+                return new long[]{0L, 0L};
             }
-            givePlayerExpInChunks(player, exp);
+            requested = Math.clamp(event.getExpAmount(), 0L, available);
         }
 
-        // Reset spawner exp and mark modified
-        spawner.setSpawnerExp(0);
+        long claimed = spawner.drainSpawnerExp(requested);
+        if (claimed <= 0L) {
+            return new long[]{0L, 0L};
+        }
+
+        long remaining = claimed;
+        long expUsedForMending = 0L;
+        try {
+            if (Config.get().isAllowExpMending()) {
+                expUsedForMending = applyMendingFromExp(player, remaining);
+                remaining -= expUsedForMending;
+            }
+            if (auraSkills != null) {
+                giveAuraSkillsXp(player, spawner, claimed);
+            }
+            if (remaining > 0L) {
+                givePlayerExpInChunks(player, remaining);
+            }
+        } catch (RuntimeException deliveryFailure) {
+            spawner.restoreSpawnerExp(claimed);
+            throw deliveryFailure;
+        }
+
         plugin.getSpawnerManager().markSpawnerModified(spawner.getSpawnerId());
-
-        // Update all viewers
         spawnerGuiViewManager.updateSpawnerMenuViewers(spawner);
-
-        // Update spawner capacity status
         if (spawner.getSpawnerExp() < spawner.getMaxStoredExp()) {
             if (spawner.getIsAtCapacity()) {
                 spawner.setIsAtCapacity(false);
             }
         }
-
-        return new long[]{initialExp, expUsedForMending};
+        return new long[]{claimed, expUsedForMending};
     }
 
     public void sendExpCollectionMessage(Player player, long totalExp, long mendingExp) {

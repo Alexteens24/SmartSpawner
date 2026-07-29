@@ -60,7 +60,7 @@ public class HopperTransfer {
         }
 
         try {
-            if (spawner.isSelling()) {
+        if (spawner.isStorageOperationInProgress()) {
                 return;
             }
 

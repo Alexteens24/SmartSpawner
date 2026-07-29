@@ -15,6 +15,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -35,9 +36,20 @@ public class SpawnerData {
     @Getter
     private final ReentrantLock dataLock = new ReentrantLock();  // For metadata changes (exp, stack size, etc.)
 
-    // Atomic sell state – single CAS guard that replaces the old sellLock + double-lock pattern.
-    // All operations that touch virtual inventory must check isSelling() before proceeding.
-    private final AtomicBoolean selling = new AtomicBoolean(false);
+    public enum StorageOperation {
+        NONE,
+        SELL,
+        CLAIM_ITEMS,
+        DROP_ITEMS,
+        CLAIM_EXP,
+        BREAK,
+        REMOVE
+    }
+
+    // One guard serializes all operations which can transfer or destroy stored
+    // items/EXP. This is intentionally independent of the player's region.
+    private final AtomicReference<StorageOperation> storageOperation =
+            new AtomicReference<>(StorageOperation.NONE);
 
     // Dirty flag for storage GUI – set when items are moved/dropped inside the storage GUI,
     // cleared (and spawner queued for save) when the GUI is closed or main menu is returned to.
@@ -54,7 +66,7 @@ public class SpawnerData {
     private int baseMaxMobs;
 
     @Getter
-    private long spawnerExp;
+    private volatile long spawnerExp;
     @Getter @Setter
     private Boolean spawnerActive;
     @Getter @Setter
@@ -351,7 +363,12 @@ public class SpawnerData {
     }
 
     public void setSpawnerExp(long exp) {
-        this.spawnerExp = Math.clamp(exp, 0L, maxStoredExp);
+        dataLock.lock();
+        try {
+            this.spawnerExp = Math.clamp(exp, 0L, maxStoredExp);
+        } finally {
+            dataLock.unlock();
+        }
         updateHologramData();
 
         // Invalidate GUI cache when experience changes
@@ -364,7 +381,12 @@ public class SpawnerData {
     }
 
     public void setSpawnerExpData(long exp) {
-        this.spawnerExp = Math.max(0L, exp);
+        dataLock.lock();
+        try {
+            this.spawnerExp = Math.max(0L, exp);
+        } finally {
+            dataLock.unlock();
+        }
     }
 
     public void setBaseMaxStoredExp(long baseMaxStoredExp) {
@@ -535,7 +557,27 @@ public class SpawnerData {
 
     /** @return true if this spawner is currently executing a sell operation */
     public boolean isSelling() {
-        return selling.get();
+        return storageOperation.get() == StorageOperation.SELL;
+    }
+
+    public boolean isStorageOperationInProgress() {
+        return storageOperation.get() != StorageOperation.NONE;
+    }
+
+    public StorageOperation getStorageOperation() {
+        return storageOperation.get();
+    }
+
+    public boolean tryStartStorageOperation(StorageOperation operation) {
+        return operation != null
+                && operation != StorageOperation.NONE
+                && storageOperation.compareAndSet(StorageOperation.NONE, operation);
+    }
+
+    public void finishStorageOperation(StorageOperation operation) {
+        if (operation != null && operation != StorageOperation.NONE) {
+            storageOperation.compareAndSet(operation, StorageOperation.NONE);
+        }
     }
 
     /**
@@ -543,12 +585,12 @@ public class SpawnerData {
      * @return true if the transition succeeded (caller owns the sell), false if already selling
      */
     public boolean startSelling() {
-        return selling.compareAndSet(false, true);
+        return tryStartStorageOperation(StorageOperation.SELL);
     }
 
     /** Releases the selling state so other operations may proceed. */
     public void stopSelling() {
-        selling.set(false);
+        finishStorageOperation(StorageOperation.SELL);
     }
 
     /** @return true if the storage GUI content was modified since last save. */
@@ -809,6 +851,78 @@ public class SpawnerData {
             return removed;
         } finally {
             inventoryLock.unlock();
+        }
+    }
+
+    /**
+     * Atomically reserves up to the requested amount of each item.
+     * The returned map is the only amount a caller is allowed to deliver.
+     */
+    public Map<ItemSignature, Long> reserveItems(Map<ItemSignature, Long> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return Map.of();
+        }
+        inventoryLock.lock();
+        try {
+            Map<ItemSignature, Long> current =
+                    virtualInventory.getConsolidatedItems();
+            Map<ItemSignature, Long> reserved = new LinkedHashMap<>();
+            for (Map.Entry<ItemSignature, Long> entry : requested.entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null
+                        || entry.getValue() <= 0L) {
+                    continue;
+                }
+                long amount = Math.min(entry.getValue(),
+                        current.getOrDefault(entry.getKey(), 0L));
+                if (amount > 0L) {
+                    reserved.put(entry.getKey(), amount);
+                }
+            }
+            if (reserved.isEmpty()
+                    || !removeItemsAndUpdateSellValue(reserved)) {
+                return Map.of();
+            }
+            return Collections.unmodifiableMap(reserved);
+        } finally {
+            inventoryLock.unlock();
+        }
+    }
+
+    public void restoreReservedItems(Map<ItemSignature, Long> reserved) {
+        addItemsAndUpdateSellValue(reserved);
+    }
+
+    /**
+     * Atomically removes and returns all stored EXP.
+     */
+    public long drainSpawnerExp() {
+        return drainSpawnerExp(Long.MAX_VALUE);
+    }
+
+    public long drainSpawnerExp(long requested) {
+        if (requested <= 0L) {
+            return 0L;
+        }
+        dataLock.lock();
+        try {
+            long drained = Math.min(Math.max(0L, spawnerExp), requested);
+            spawnerExp -= drained;
+            return drained;
+        } finally {
+            dataLock.unlock();
+        }
+    }
+
+    public void restoreSpawnerExp(long amount) {
+        if (amount <= 0L) {
+            return;
+        }
+        dataLock.lock();
+        try {
+            long available = Math.max(0L, maxStoredExp - spawnerExp);
+            spawnerExp += Math.min(amount, available);
+        } finally {
+            dataLock.unlock();
         }
     }
 

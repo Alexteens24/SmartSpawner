@@ -118,6 +118,8 @@ lifetime:
     message: "&#FF4444Süreli ve kalıcı spawnerlar karıştırılamaz."
   timed_destack_denied:
     message: "&#FF4444Süreli yığın bölünemez. Tüm yığını eğilerek kırın."
+  expired_storage_not_empty:
+    message: "&#FF4444Süresi dolmuş spawnerı kırmadan önce eşyaları ve EXP'yi boşaltın."
 
 # ──────────────────────────────────────────────────────
 #                      /ss hologram

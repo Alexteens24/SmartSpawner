@@ -7,6 +7,9 @@ import github.nighter.smartspawner.spawner.data.legacy.LegacyInventoryCodec;
 import github.nighter.smartspawner.spawner.data.storage.SpawnerInventoryCodec;
 import github.nighter.smartspawner.spawner.data.storage.SpawnerStorage;
 import github.nighter.smartspawner.spawner.data.storage.StorageMode;
+import github.nighter.smartspawner.spawner.data.storage.MutationQueue;
+import github.nighter.smartspawner.spawner.data.storage.PendingMutation;
+import github.nighter.smartspawner.spawner.data.storage.SpawnerSnapshot;
 import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import github.nighter.smartspawner.spawner.properties.VirtualInventory;
@@ -19,6 +22,7 @@ import org.bukkit.inventory.ItemStack;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.function.Consumer;
@@ -34,11 +38,10 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
     private final DatabaseManager databaseManager;
     private final String serverName;
 
-    // Dirty tracking for batch saves
-    private final Set<String> dirtySpawners = ConcurrentHashMap.newKeySet();
-    private final Set<String> deletedSpawners = ConcurrentHashMap.newKeySet();
-
-    private volatile boolean isSaving = false;
+    private final MutationQueue mutations = new MutationQueue();
+    private final AtomicBoolean isSaving = new AtomicBoolean(false);
+    private final Object saveMonitor = new Object();
+    private volatile boolean shuttingDown;
     private Scheduler.Task saveTask = null;
 
     // Cache for raw location strings (used by WorldEventHandler)
@@ -190,17 +193,27 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
 
     @Override
     public void markSpawnerModified(String spawnerId) {
-        if (spawnerId != null) {
-            dirtySpawners.add(spawnerId);
-            deletedSpawners.remove(spawnerId);
+        SpawnerData spawner = spawnerId == null
+                ? null : plugin.getSpawnerManager().getSpawnerById(spawnerId);
+        if (spawner != null) {
+            mutations.modified(SpawnerSnapshot.capture(spawner));
         }
+    }
+
+    @Override
+    public void markSpawnerCreated(SpawnerSnapshot snapshot) {
+        mutations.created(snapshot);
+    }
+
+    @Override
+    public void queueWorldSnapshots(Collection<SpawnerSnapshot> snapshots) {
+        mutations.modifiedAll(snapshots);
     }
 
     @Override
     public void markSpawnerDeleted(String spawnerId) {
         if (spawnerId != null) {
-            deletedSpawners.add(spawnerId);
-            dirtySpawners.remove(spawnerId);
+            mutations.deleted(spawnerId);
             locationCache.remove(spawnerId);
         }
     }
@@ -212,152 +225,148 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
 
     @Override
     public void flushChanges() {
-        if (dirtySpawners.isEmpty() && deletedSpawners.isEmpty()) {
+        if (mutations.isEmpty()) {
             plugin.debug("No database changes to flush");
             return;
         }
 
-        if (isSaving) {
+        if (!isSaving.compareAndSet(false, true)) {
             plugin.debug("Database flush operation already in progress");
             return;
         }
 
-        isSaving = true;
-        plugin.debug("Flushing " + dirtySpawners.size() + " modified and " + deletedSpawners.size() + " deleted spawners to database");
-
-        Scheduler.runTaskAsync(() -> {
-            try {
-                // Handle updates
-                if (!dirtySpawners.isEmpty()) {
-                    Set<String> toUpdate = new HashSet<>(dirtySpawners);
-                    dirtySpawners.removeAll(toUpdate);
-
-                    saveSpawnerBatch(toUpdate);
-                }
-
-                // Handle deletes
-                if (!deletedSpawners.isEmpty()) {
-                    Set<String> toDelete = new HashSet<>(deletedSpawners);
-                    deletedSpawners.removeAll(toDelete);
-
-                    deleteSpawnerBatch(toDelete);
-                }
-            } catch (Exception e) {
-                logger.log(Level.SEVERE, "Error during database flush", e);
-                // Re-add failed items back to dirty lists
-                // Note: In production, might want more sophisticated retry logic
-            } finally {
-                isSaving = false;
-            }
-        });
+        plugin.debug("Flushing " + mutations.size()
+                + " pending spawner mutations to database");
+        Scheduler.runTaskAsync(this::runFlushWorker);
     }
 
-    private void saveSpawnerBatch(Set<String> spawnerIds) {
-        if (spawnerIds.isEmpty()) return;
+    private void runFlushWorker() {
+        boolean failed = false;
+        try {
+            while (!mutations.isEmpty()) {
+                Map<String, PendingMutation> captured = mutations.capture();
+                if (captured.isEmpty()) {
+                    break;
+                }
+                if (!commitMutationBatch(captured)) {
+                    failed = true;
+                    break;
+                }
+                mutations.commit(captured);
+            }
+        } finally {
+            isSaving.set(false);
+            synchronized (saveMonitor) {
+                saveMonitor.notifyAll();
+            }
+            if (!failed && !shuttingDown && !mutations.isEmpty()) {
+                flushChanges();
+            }
+        }
+    }
 
-        // Select appropriate SQL based on storage mode
+    private boolean commitMutationBatch(Map<String, PendingMutation> batch) {
         String upsertSql = databaseManager.getStorageMode() == StorageMode.SQLITE
                 ? UPSERT_SQL_SQLITE
                 : UPSERT_SQL_MYSQL;
 
-        try (Connection conn = databaseManager.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(upsertSql)) {
-
-            conn.setAutoCommit(false);
-
-            for (String spawnerId : spawnerIds) {
-                SpawnerData spawner = plugin.getSpawnerManager().getSpawnerById(spawnerId);
-                if (spawner == null) continue;
-
-                setSpawnerParameters(stmt, spawner);
-                stmt.addBatch();
+        Map<String, String> encoded = new HashMap<>();
+        try {
+            for (Map.Entry<String, PendingMutation> entry : batch.entrySet()) {
+                if (entry.getValue().operation() == PendingMutation.Operation.UPSERT) {
+                    String payload = SpawnerInventoryCodec.encodeToString(
+                            entry.getValue().snapshot().inventory());
+                    databaseManager.validateInventoryPayloadSize(payload);
+                    encoded.put(entry.getKey(), payload);
+                }
             }
+        } catch (Exception encodeFailure) {
+            logger.log(Level.SEVERE,
+                    "Could not encode database spawner mutation batch", encodeFailure);
+            return false;
+        }
 
-            stmt.executeBatch();
-            conn.commit();
-            plugin.debug("Saved " + spawnerIds.size() + " spawners to database");
-
-        } catch (SQLException e) {
-            logger.log(Level.SEVERE, "Error saving spawner batch to database", e);
-            // Re-add to dirty list for retry
-            dirtySpawners.addAll(spawnerIds);
+        try (Connection conn = databaseManager.getConnection();
+             PreparedStatement upsert = conn.prepareStatement(upsertSql);
+             PreparedStatement delete = conn.prepareStatement(DELETE_SQL)) {
+            conn.setAutoCommit(false);
+            try {
+                int upserts = 0;
+                int deletes = 0;
+                for (Map.Entry<String, PendingMutation> entry : batch.entrySet()) {
+                    PendingMutation mutation = entry.getValue();
+                    if (mutation.operation() == PendingMutation.Operation.DELETE) {
+                        delete.setString(1, serverName);
+                        delete.setString(2, entry.getKey());
+                        delete.addBatch();
+                        deletes++;
+                    } else {
+                        setSpawnerParameters(upsert, mutation.snapshot(),
+                                encoded.get(entry.getKey()));
+                        upsert.addBatch();
+                        upserts++;
+                    }
+                }
+                if (upserts > 0) {
+                    upsert.executeBatch();
+                }
+                if (deletes > 0) {
+                    delete.executeBatch();
+                }
+                conn.commit();
+                plugin.debug("Committed " + batch.size()
+                        + " database spawner mutations");
+                return true;
+            } catch (Exception failure) {
+                conn.rollback();
+                throw failure;
+            }
+        } catch (Exception failure) {
+            logger.log(Level.SEVERE,
+                    "Error committing database spawner mutation batch", failure);
+            return false;
         }
     }
 
-    private void deleteSpawnerBatch(Set<String> spawnerIds) {
-        if (spawnerIds.isEmpty()) return;
-
-        try (Connection conn = databaseManager.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(DELETE_SQL)) {
-
-            conn.setAutoCommit(false);
-
-            for (String spawnerId : spawnerIds) {
-                stmt.setString(1, serverName);
-                stmt.setString(2, spawnerId);
-                stmt.addBatch();
-            }
-
-            stmt.executeBatch();
-            conn.commit();
-            plugin.debug("Deleted " + spawnerIds.size() + " spawners from database");
-
-        } catch (SQLException e) {
-            logger.log(Level.SEVERE, "Error deleting spawner batch from database", e);
-            // Re-add to deleted list for retry
-            deletedSpawners.addAll(spawnerIds);
-        }
-    }
-
-    private void setSpawnerParameters(PreparedStatement stmt, SpawnerData spawner) throws SQLException {
-        Location loc = spawner.getSpawnerLocation();
-
-        stmt.setString(1, spawner.getSpawnerId());
+    private void setSpawnerParameters(PreparedStatement stmt,
+                                      SpawnerSnapshot spawner,
+                                      String encodedInventory) throws SQLException {
+        stmt.setString(1, spawner.id());
         stmt.setString(2, serverName);
-        stmt.setString(3, loc.getWorld().getName());
-        stmt.setInt(4, loc.getBlockX());
-        stmt.setInt(5, loc.getBlockY());
-        stmt.setInt(6, loc.getBlockZ());
-        stmt.setString(7, spawner.getEntityType().name());
-        stmt.setString(8, spawner.isItemSpawner() ? spawner.getSpawnedItemMaterial().name() : null);
-        stmt.setLong(9, Math.max(0L, spawner.getSpawnerExp()));
-        stmt.setBoolean(10, spawner.getSpawnerActive());
-        stmt.setInt(11, spawner.getSpawnerRange());
-        stmt.setBoolean(12, spawner.getSpawnerStop().get());
-        stmt.setLong(13, spawner.getSpawnDelay());
-        stmt.setInt(14, spawner.getMaxSpawnerLootSlots());
-        stmt.setLong(15, spawner.getMaxStoredExp());
-        stmt.setInt(16, spawner.getMinMobs());
-        stmt.setInt(17, spawner.getMaxMobs());
-        stmt.setInt(18, spawner.getStackSize());
-        stmt.setInt(19, spawner.getMaxStackSize());
-        stmt.setLong(20, spawner.getLastSpawnTime());
-        stmt.setBoolean(21, spawner.getIsAtCapacity());
-        stmt.setString(22, spawner.getLastInteractedPlayer());
-        stmt.setString(23, spawner.getPreferredSortItem() != null ? spawner.getPreferredSortItem().name() : null);
-        stmt.setString(24, serializeFilteredItems(spawner.getFilteredItems()));
-
-        Map<ItemSignature, Long> inventorySnapshot;
-        spawner.getInventoryLock().lock();
-        try {
-            inventorySnapshot = spawner.getVirtualInventory().getConsolidatedItems();
-        } finally {
-            spawner.getInventoryLock().unlock();
-        }
-        try {
-            stmt.setString(25, SpawnerInventoryCodec.encodeToString(inventorySnapshot));
-        } catch (java.io.IOException encodeFailure) {
-            throw new SQLException("Could not encode inventory for spawner "
-                    + spawner.getSpawnerId(), encodeFailure);
-        }
-        stmt.setLong(26, SpawnerInventoryCodec.totalItems(inventorySnapshot));
-        stmt.setLong(27, spawner.isTimed() ? spawner.getLifetimeExpiresAt() : -1L);
-        stmt.setBoolean(28, spawner.isExpired());
+        stmt.setString(3, spawner.worldName());
+        stmt.setInt(4, spawner.x());
+        stmt.setInt(5, spawner.y());
+        stmt.setInt(6, spawner.z());
+        stmt.setString(7, spawner.entityType());
+        stmt.setString(8, spawner.itemSpawnerMaterial());
+        stmt.setLong(9, spawner.spawnerExp());
+        stmt.setBoolean(10, spawner.spawnerActive());
+        stmt.setInt(11, spawner.spawnerRange());
+        stmt.setBoolean(12, spawner.spawnerStop());
+        stmt.setLong(13, spawner.spawnDelay());
+        stmt.setInt(14, spawner.maxSpawnerLootSlots());
+        stmt.setLong(15, spawner.maxStoredExp());
+        stmt.setInt(16, spawner.minMobs());
+        stmt.setInt(17, spawner.maxMobs());
+        stmt.setInt(18, spawner.stackSize());
+        stmt.setInt(19, spawner.maxStackSize());
+        stmt.setLong(20, spawner.lastSpawnTime());
+        stmt.setBoolean(21, spawner.atCapacity());
+        stmt.setString(22, spawner.lastInteractedPlayer());
+        stmt.setString(23, spawner.preferredSortItem());
+        stmt.setString(24, spawner.filteredItems().isEmpty()
+                ? null : String.join(",", spawner.filteredItems()));
+        stmt.setString(25, encodedInventory);
+        stmt.setLong(26, SpawnerInventoryCodec.totalItems(spawner.inventory()));
+        stmt.setLong(27, spawner.lifetimeExpiresAt());
+        stmt.setBoolean(28, spawner.expired());
     }
 
     @Override
     public Map<String, SpawnerData> loadAllSpawnersRaw() {
         Map<String, SpawnerData> loadedSpawners = new HashMap<>();
+        int legacyInventories = 0;
+        int modernInventories = 0;
 
         try (Connection conn = databaseManager.getConnection();
              PreparedStatement stmt = conn.prepareStatement(SELECT_ALL_SQL)) {
@@ -367,6 +376,14 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     String spawnerId = rs.getString("spawner_id");
+                    String rawInventory = rs.getString("inventory_data");
+                    if (rawInventory != null && !rawInventory.isEmpty()) {
+                        if (rawInventory.startsWith(SpawnerInventoryCodec.PREFIX)) {
+                            modernInventories++;
+                        } else {
+                            legacyInventories++;
+                        }
+                    }
                     try {
                         SpawnerData spawner = loadSpawnerFromResultSet(rs);
                         loadedSpawners.put(spawnerId, spawner);
@@ -383,6 +400,21 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                         plugin.debug("Error loading spawner " + spawnerId + ": " + e.getMessage());
                         loadedSpawners.put(spawnerId, null);
                     }
+                }
+            }
+
+            if (legacyInventories > 0 || modernInventories > 0) {
+                logger.info("Database inventory formats for server " + serverName
+                        + ": " + legacyInventories + " legacy, "
+                        + modernInventories + " ssinv1.");
+                if (legacyInventories > 0 && modernInventories > 0) {
+                    logger.warning("Mixed legacy/ssinv1 database rows detected. "
+                            + "Backups are created per legacy row immediately "
+                            + "before lazy rewrite.");
+                } else if (legacyInventories == 0 && modernInventories > 0) {
+                    logger.warning("All detected database inventories for "
+                            + serverName + " are already ssinv1; a new backup "
+                            + "cannot recover their former legacy form.");
                 }
             }
 
@@ -446,6 +478,28 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         }
 
         return null;
+    }
+
+    @Override
+    public long loadOnlineTimeMillis() {
+        try {
+            return databaseManager.loadServerOnlineTimeMillis(serverName);
+        } catch (SQLException failure) {
+            logger.log(Level.WARNING,
+                    "Could not load database lifetime clock", failure);
+            return 0L;
+        }
+    }
+
+    @Override
+    public void saveOnlineTimeMillis(long onlineTimeMillis) {
+        try {
+            databaseManager.saveServerOnlineTimeMillis(
+                    serverName, onlineTimeMillis);
+        } catch (SQLException failure) {
+            logger.log(Level.WARNING,
+                    "Could not checkpoint database lifetime clock", failure);
+        }
     }
 
     private SpawnerData loadSpawnerFromResultSet(ResultSet rs) throws SQLException {
@@ -530,10 +584,12 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
         // Load inventory
         String inventoryData = rs.getString("inventory_data");
         VirtualInventory virtualInv = new VirtualInventory(spawner.getMaxSpawnerLootSlots());
+        boolean legacyInventory = false;
         if (inventoryData != null && !inventoryData.isEmpty()) {
             try {
                 Map<ItemStack, Long> items;
                 boolean legacy = !inventoryData.startsWith(SpawnerInventoryCodec.PREFIX);
+                legacyInventory = legacy;
                 if (legacy) {
                     items = LegacyInventoryCodec.deserialize(
                             LegacyInventoryCodec.parseJsonArray(inventoryData));
@@ -542,9 +598,6 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
                 }
                 for (Map.Entry<ItemStack, Long> entry : items.entrySet()) {
                     virtualInv.addItem(entry.getKey(), entry.getValue());
-                }
-                if (legacy) {
-                    dirtySpawners.add(spawnerId);
                 }
             } catch (Exception e) {
                 throw new SQLException("Refusing to load spawner " + spawnerId
@@ -575,41 +628,40 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
             });
         }
 
+        if (legacyInventory) {
+            databaseManager.backupLegacyInventoryRow(serverName, spawnerId, inventoryData);
+            mutations.modified(SpawnerSnapshot.capture(spawner));
+        }
+
         return spawner;
     }
 
     @Override
     public void shutdown() {
+        shuttingDown = true;
         if (saveTask != null) {
             saveTask.cancel();
             saveTask = null;
         }
 
-        // Perform synchronous flush on shutdown
-        if (!dirtySpawners.isEmpty() || !deletedSpawners.isEmpty()) {
-            try {
-                isSaving = true;
-                logger.info("Saving " + dirtySpawners.size() + " spawners to database on shutdown...");
-
-                if (!dirtySpawners.isEmpty()) {
-                    saveSpawnerBatch(new HashSet<>(dirtySpawners));
+        synchronized (saveMonitor) {
+            while (isSaving.get()) {
+                try {
+                    saveMonitor.wait(1000L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
-
-                if (!deletedSpawners.isEmpty()) {
-                    deleteSpawnerBatch(new HashSet<>(deletedSpawners));
-                }
-
-                dirtySpawners.clear();
-                deletedSpawners.clear();
-                logger.info("Database shutdown save completed.");
-
-            } catch (Exception e) {
-                logger.log(Level.SEVERE, "Error during database shutdown flush", e);
-            } finally {
-                isSaving = false;
             }
         }
 
+        if (!mutations.isEmpty() && isSaving.compareAndSet(false, true)) {
+            runFlushWorker();
+        }
+        if (!mutations.isEmpty()) {
+            logger.severe("Database shutdown completed with " + mutations.size()
+                    + " unsaved spawner mutations: " + mutations.ids());
+        }
         locationCache.clear();
     }
 

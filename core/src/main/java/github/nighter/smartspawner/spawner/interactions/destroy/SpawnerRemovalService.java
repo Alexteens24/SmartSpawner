@@ -96,22 +96,29 @@ public class SpawnerRemovalService {
         }
 
         try {
-            if (spawner.isSelling()) {
+            if (!spawner.tryStartStorageOperation(
+                    SpawnerData.StorageOperation.REMOVE)) {
                 return false;
             }
 
             SpawnerData currentById = spawnerManager.getSpawnerById(spawner.getSpawnerId());
             SpawnerData currentByLocation = spawnerManager.getSpawnerByLocation(location);
             if (currentById != spawner || currentByLocation != spawner) {
+                spawner.finishStorageOperation(
+                        SpawnerData.StorageOperation.REMOVE);
                 return false;
             }
 
             if (!pendingRemovalIds.add(spawner.getSpawnerId())) {
+                spawner.finishStorageOperation(
+                        SpawnerData.StorageOperation.REMOVE);
                 return false;
             }
 
             if (!pendingRemovalLocations.add(blockPos)) {
                 pendingRemovalIds.remove(spawner.getSpawnerId());
+                spawner.finishStorageOperation(
+                        SpawnerData.StorageOperation.REMOVE);
                 return false;
             }
 
@@ -171,6 +178,8 @@ public class SpawnerRemovalService {
         } finally {
             pendingRemovalIds.remove(spawner.getSpawnerId());
             pendingRemovalLocations.remove(blockPos);
+            spawner.finishStorageOperation(
+                    SpawnerData.StorageOperation.REMOVE);
             locationLockManager.unlock(location);
             if (removeLocationLock) {
                 locationLockManager.removeLock(location);
@@ -187,6 +196,8 @@ public class SpawnerRemovalService {
         pendingRemovalIds.remove(spawner.getSpawnerId());
         pendingRemovalLocations.remove(blockPos);
         spawner.getSpawnerStop().set(previousStop);
+        spawner.finishStorageOperation(
+                SpawnerData.StorageOperation.REMOVE);
         completeFuture(future, false);
     }
 

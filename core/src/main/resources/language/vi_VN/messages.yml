@@ -137,6 +137,10 @@ drop_failed:
   action_bar: '&#FF4444Spawner không rơi ra.'
   sound: block.note_block.pling
 
+break_too_many_drops:
+  message: '&#FF4444Stack này sẽ tạo quá nhiều item entity. Hãy giảm stack trước khi phá.'
+  sound: block.note_block.pling
+
 sneak_break_blocked:
   message: '&#FF4444Bạn không thể phá cả stack khi spawner này có tỉ lệ rơi.'
   action_bar: '&#FF4444Không thể phá cả stack.'

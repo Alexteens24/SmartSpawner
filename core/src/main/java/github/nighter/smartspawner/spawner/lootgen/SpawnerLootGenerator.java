@@ -28,8 +28,9 @@ public class SpawnerLootGenerator {
     }
 
     public void spawnLootToSpawner(SpawnerData spawner) {
-        // Skip loot generation while a sell is in progress to avoid inventory conflicts
-        if (spawner.isSelling()) {
+        if (spawner.isStorageOperationInProgress()
+                || spawner.isExpired()
+                || spawner.getSpawnerStop().get()) {
             return;
         }
 
@@ -108,7 +109,7 @@ public class SpawnerLootGenerator {
                     }
 
                     try {
-                        if (spawner.isSelling()) {
+                        if (!isCommitTargetValid(spawner)) {
                             return;
                         }
 
@@ -505,6 +506,9 @@ public class SpawnerLootGenerator {
         }
 
         Scheduler.runLocationTask(spawnerLocation, () -> {
+            if (!isCommitTargetValid(spawner)) {
+                return;
+            }
             if (!spawner.getLootGenerationLock().tryLock()) {
                 spawner.restorePreGeneratedLoot(items, experience);
                 return;
@@ -512,8 +516,7 @@ public class SpawnerLootGenerator {
 
             try {
                 try {
-                    if (spawner.isSelling()) {
-                        spawner.restorePreGeneratedLoot(items, experience);
+                    if (!isCommitTargetValid(spawner)) {
                         return;
                     }
 
@@ -590,6 +593,20 @@ public class SpawnerLootGenerator {
                 spawner.getLootGenerationLock().unlock();
             }
         });
+    }
+
+    private boolean isCommitTargetValid(SpawnerData spawner) {
+        if (spawner == null
+                || spawnerManager.getSpawnerById(spawner.getSpawnerId()) != spawner
+                || spawner.isStorageOperationInProgress()
+                || spawner.isExpired()
+                || spawner.getSpawnerStop().get()) {
+            return false;
+        }
+        Location location = spawner.getSpawnerLocation();
+        return location != null
+                && location.getWorld() != null
+                && location.getBlock().getType() == Material.SPAWNER;
     }
 
     /**

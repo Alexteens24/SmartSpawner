@@ -21,8 +21,9 @@ import java.util.Map;
 public final class SpawnerInventoryCodec {
     public static final String PREFIX = "ssinv1:";
     private static final byte FORMAT_VERSION = 1;
-    private static final int MAX_DECODED_BYTES = 16 * 1024 * 1024;
-    private static final int MAX_ENCODED_CHARS = ((MAX_DECODED_BYTES + 2) / 3) * 4;
+    private static final int MAX_READ_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_WRITE_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_ENCODED_CHARS = ((MAX_READ_BYTES + 2) / 3) * 4;
 
     private SpawnerInventoryCodec() {
     }
@@ -65,7 +66,7 @@ public final class SpawnerInventoryCodec {
         }
 
         long expectedSize = 1L + 4L + amounts.size() * 8L + 4L + itemPayload.length;
-        if (expectedSize > MAX_DECODED_BYTES) {
+        if (expectedSize > MAX_WRITE_BYTES) {
             throw new IOException("Spawner inventory payload is too large: " + expectedSize + " bytes");
         }
 
@@ -106,7 +107,7 @@ public final class SpawnerInventoryCodec {
         if (blob == null || blob.length == 0) {
             return Map.of();
         }
-        if (blob.length > MAX_DECODED_BYTES) {
+        if (blob.length > MAX_READ_BYTES) {
             throw new IOException("Spawner inventory payload exceeds safety limit");
         }
 

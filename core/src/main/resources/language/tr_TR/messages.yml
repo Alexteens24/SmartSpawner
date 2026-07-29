@@ -137,6 +137,10 @@ drop_failed:
   action_bar: '&#FF4444Spawner düşmedi.'
   sound: block.note_block.pling
 
+break_too_many_drops:
+  message: '&#FF4444Bu yığın çok fazla eşya oluşturur. Kırmadan önce yığını küçültün.'
+  sound: block.note_block.pling
+
 sneak_break_blocked:
   message: '&#FF4444Bu spawnerda düşme şansı olduğu için tüm stacki tek seferde kıramazsın.'
   action_bar: '&#FF4444Tüm stack aynı anda kırılamaz.'

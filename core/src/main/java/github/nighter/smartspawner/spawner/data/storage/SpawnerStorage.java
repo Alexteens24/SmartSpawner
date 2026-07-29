@@ -2,6 +2,7 @@ package github.nighter.smartspawner.spawner.data.storage;
 
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 
+import java.util.Collection;
 import java.util.Map;
 
 /**
@@ -44,6 +45,17 @@ public interface SpawnerStorage {
     void markSpawnerModified(String spawnerId);
 
     /**
+     * Queue a newly-created spawner. This is the only operation allowed to
+     * replace an existing deletion tombstone.
+     */
+    void markSpawnerCreated(SpawnerSnapshot snapshot);
+
+    /**
+     * Queue snapshots captured before a world is removed from runtime indexes.
+     */
+    void queueWorldSnapshots(Collection<SpawnerSnapshot> snapshots);
+
+    /**
      * Mark a spawner as deleted for batch removal.
      * @param spawnerId The ID of the deleted spawner
      */
@@ -60,6 +72,10 @@ public interface SpawnerStorage {
      * Called periodically and before shutdown.
      */
     void flushChanges();
+
+    long loadOnlineTimeMillis();
+
+    void saveOnlineTimeMillis(long onlineTimeMillis);
 
     /**
      * Get the raw location string for a spawner.
