@@ -31,6 +31,7 @@ public class SpawnerHologram {
     private long remainingLifetimeMillis;
     private boolean timed;
     private boolean expired;
+    private boolean omniSpawner;
     private static final String HOLOGRAM_IDENTIFIER = "SmartSpawner-Holo";
     private final String uniqueIdentifier;
 
@@ -43,6 +44,7 @@ public class SpawnerHologram {
 
     // Cached entity display names (recomputed only when entityType changes)
     private EntityType cachedEntityType = null;
+    private boolean cachedOmniSpawner;
     private String cachedEntityName = null;
     private String cachedEntitySmallCaps = null;
 
@@ -135,9 +137,13 @@ public class SpawnerHologram {
     /** Builds the final display string from cached data. Must be called on the owning region thread. */
     private String computeText() {
         // Refresh entity name cache only when the entity type changes
-        if (cachedEntityType != entityType) {
+        if (cachedEntityType != entityType
+                || cachedOmniSpawner != omniSpawner) {
             cachedEntityType = entityType;
-            cachedEntityName = languageManager.getFormattedMobName(entityType);
+            cachedOmniSpawner = omniSpawner;
+            cachedEntityName = omniSpawner
+                    ? "Omni"
+                    : languageManager.getFormattedMobName(entityType);
             cachedEntitySmallCaps = languageManager.getSmallCaps(cachedEntityName);
         }
 
@@ -196,7 +202,8 @@ public class SpawnerHologram {
 
     public void updateData(int stackSize, EntityType entityType, long currentExp, long maxExp,
                            int currentItems, int maxSlots, long remainingLifetimeMillis,
-                           boolean timed, boolean expired) {
+                           boolean timed, boolean expired,
+                           boolean omniSpawner) {
         TextDisplay display = textDisplay.get();
 
         // Skip entirely when nothing has changed and the hologram already exists.
@@ -209,7 +216,8 @@ public class SpawnerHologram {
                 && this.maxSlots == maxSlots
                 && this.remainingLifetimeMillis / 1000L == remainingLifetimeMillis / 1000L
                 && this.timed == timed
-                && this.expired == expired) {
+                && this.expired == expired
+                && this.omniSpawner == omniSpawner) {
             return;
         }
 
@@ -222,6 +230,7 @@ public class SpawnerHologram {
         this.remainingLifetimeMillis = remainingLifetimeMillis;
         this.timed = timed;
         this.expired = expired;
+        this.omniSpawner = omniSpawner;
 
         if (display == null) {
             createHologram();

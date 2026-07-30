@@ -2,13 +2,10 @@ package github.nighter.smartspawner.spawner.lifetime;
 
 import github.nighter.smartspawner.Scheduler;
 import github.nighter.smartspawner.SmartSpawner;
-import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
-import github.nighter.smartspawner.spawner.properties.VirtualInventory;
 import org.bukkit.Material;
 
 import java.util.Comparator;
-import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -176,11 +173,6 @@ public final class SpawnerLifetimeService {
                 spawner.setSpawnerActive(false);
                 spawner.getSpawnerStop().set(true);
                 spawner.clearPreGeneratedLoot();
-
-                ItemSignature emptySpawner = VirtualInventory.getSignature(
-                        plugin.getSpawnerItemFactory().createEmptySpawnerItem());
-                spawner.addItemsAndUpdateSellValue(
-                        Map.of(emptySpawner, (long) spawner.getStackSize()));
             } finally {
                 spawner.getDataLock().unlock();
             }

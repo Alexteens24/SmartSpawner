@@ -390,7 +390,9 @@ public class SpawnerStackerHandler implements Listener {
             spawnerManager.markSpawnerModified(spawner.getSpawnerId());
 
             // Give spawners to player after decreasing stack
-            if (spawner.isItemSpawner()) {
+            if (spawner.isOmniSpawner()) {
+                giveOmniSpawnersToPlayer(player, finalActualChange);
+            } else if (spawner.isItemSpawner()) {
                 giveItemSpawnersToPlayer(player, finalActualChange, spawner.getSpawnedItemMaterial());
             } else {
                 giveSpawnersToPlayer(player, finalActualChange, spawner.getEntityType());
@@ -446,7 +448,9 @@ public class SpawnerStackerHandler implements Listener {
 
             // Analyze inventory based on spawner type
             InventoryScanResult scanResult;
-            if (spawner.isItemSpawner()) {
+            if (spawner.isOmniSpawner()) {
+                scanResult = scanPlayerInventoryForOmniSpawner(player);
+            } else if (spawner.isItemSpawner()) {
                 Material requiredItemMaterial = spawner.getSpawnedItemMaterial();
                 scanResult = scanPlayerInventoryForItemSpawner(player, requiredItemMaterial);
             } else {
@@ -477,7 +481,10 @@ public class SpawnerStackerHandler implements Listener {
                 if (e.isCancelled()) return;
             }
 
-            if (spawner.isItemSpawner()) {
+            if (spawner.isOmniSpawner()) {
+                removeValidOmniSpawnersFromInventory(player, actualChange,
+                        scanResult.spawnerSlots);
+            } else if (spawner.isItemSpawner()) {
                 removeValidItemSpawnersFromInventory(player, spawner.getSpawnedItemMaterial(), actualChange, scanResult.spawnerSlots);
             } else {
                 removeValidSpawnersFromInventory(player, spawner.getEntityType(), actualChange, scanResult.spawnerSlots);
@@ -530,7 +537,9 @@ public class SpawnerStackerHandler implements Listener {
 
             // Scan inventory for matching spawners
             InventoryScanResult scanResult;
-            if (spawner.isItemSpawner()) {
+            if (spawner.isOmniSpawner()) {
+                scanResult = scanPlayerInventoryForOmniSpawner(player);
+            } else if (spawner.isItemSpawner()) {
                 scanResult = scanPlayerInventoryForItemSpawner(player, spawner.getSpawnedItemMaterial());
             } else {
                 scanResult = scanPlayerInventory(player, spawner.getEntityType());
@@ -558,7 +567,10 @@ public class SpawnerStackerHandler implements Listener {
             }
 
             // Remove spawners from inventory first
-            if (spawner.isItemSpawner()) {
+            if (spawner.isOmniSpawner()) {
+                removeValidOmniSpawnersFromInventory(player, actualChange,
+                        scanResult.spawnerSlots);
+            } else if (spawner.isItemSpawner()) {
                 removeValidItemSpawnersFromInventory(player, spawner.getSpawnedItemMaterial(), actualChange,
                         scanResult.spawnerSlots);
             } else {
@@ -624,7 +636,9 @@ public class SpawnerStackerHandler implements Listener {
             spawnerManager.markSpawnerModified(spawner.getSpawnerId());
 
             // Give spawners to player after decreasing stack
-            if (spawner.isItemSpawner()) {
+            if (spawner.isOmniSpawner()) {
+                giveOmniSpawnersToPlayer(player, finalActualChange);
+            } else if (spawner.isItemSpawner()) {
                 giveItemSpawnersToPlayer(player, finalActualChange, spawner.getSpawnedItemMaterial());
             } else {
                 giveSpawnersToPlayer(player, finalActualChange, spawner.getEntityType());
@@ -666,11 +680,15 @@ public class SpawnerStackerHandler implements Listener {
             if (item.getType() == Material.SPAWNER && !SpawnerTypeChecker.isVanillaSpawner(item)) {
                 Optional<EntityType> itemEntityType = getSpawnerEntityTypeCached(item);
                 boolean matches;
-                if (spawner.isItemSpawner()) {
+                if (spawner.isOmniSpawner()) {
+                    matches = SpawnerTypeChecker.isOmniSpawner(item);
+                } else if (spawner.isItemSpawner()) {
                     // For item spawners, match by spawned item material
                     matches = false; // Item spawners use separate give method; empty slots cover them
                 } else {
-                    matches = itemEntityType.isPresent() && itemEntityType.get() == spawner.getEntityType();
+                    matches = !SpawnerTypeChecker.isOmniSpawner(item)
+                            && itemEntityType.isPresent()
+                            && itemEntityType.get() == spawner.getEntityType();
                 }
 
                 if (matches && item.getAmount() < MAX_STACK_SIZE) {
@@ -747,7 +765,7 @@ public class SpawnerStackerHandler implements Listener {
         placeholders.put("stack_size", String.valueOf(spawner.getStackSize()));
         placeholders.put("max_stack_size", String.valueOf(spawner.getMaxStackSize()));
 
-        String entityName = languageManager.getFormattedMobName(spawner.getEntityType());
+        String entityName = spawner.getDisplayEntityName();
         placeholders.put("entity", entityName);
         placeholders.put("ᴇɴᴛɪᴛʏ", languageManager.getSmallCaps(entityName));
 
@@ -824,6 +842,11 @@ public class SpawnerStackerHandler implements Listener {
             // Skip vanilla spawners
             if (SpawnerTypeChecker.isVanillaSpawner(item)) continue;
 
+            if (SpawnerTypeChecker.isOmniSpawner(item)) {
+                hasDifferentType = true;
+                continue;
+            }
+
             Optional<EntityType> itemType = getSpawnerEntityTypeCached(item);
             if (itemType.isPresent()) {
                 if (itemType.get() == requiredType) {
@@ -835,6 +858,29 @@ public class SpawnerStackerHandler implements Listener {
             }
         }
 
+        return new InventoryScanResult(count, hasDifferentType, spawnerSlots);
+    }
+
+    private InventoryScanResult scanPlayerInventoryForOmniSpawner(
+            Player player) {
+        int count = 0;
+        boolean hasDifferentType = false;
+        List<SpawnerSlot> spawnerSlots = new ArrayList<>();
+
+        ItemStack[] contents = player.getInventory().getContents();
+        for (int i = 0; i < contents.length; i++) {
+            ItemStack item = contents[i];
+            if (item == null || item.getType() != Material.SPAWNER
+                    || SpawnerTypeChecker.isVanillaSpawner(item)) {
+                continue;
+            }
+            if (SpawnerTypeChecker.isOmniSpawner(item)) {
+                count += item.getAmount();
+                spawnerSlots.add(new SpawnerSlot(i, item.getAmount()));
+            } else {
+                hasDifferentType = true;
+            }
+        }
         return new InventoryScanResult(count, hasDifferentType, spawnerSlots);
     }
 
@@ -921,7 +967,9 @@ public class SpawnerStackerHandler implements Listener {
             if (item == null || item.getType() != Material.SPAWNER) continue;
 
             Optional<EntityType> spawnerType = getSpawnerEntityTypeCached(item);
-            if (spawnerType.isPresent() && spawnerType.get() == requiredType) {
+            if (!SpawnerTypeChecker.isOmniSpawner(item)
+                    && spawnerType.isPresent()
+                    && spawnerType.get() == requiredType) {
                 int itemAmount = item.getAmount();
                 if (itemAmount <= remainingToRemove) {
                     player.getInventory().setItem(slot.slotIndex, null);
@@ -933,6 +981,29 @@ public class SpawnerStackerHandler implements Listener {
             }
         }
 
+        player.updateInventory();
+    }
+
+    private void removeValidOmniSpawnersFromInventory(Player player,
+            int amountToRemove, List<SpawnerSlot> spawnerSlots) {
+        int remainingToRemove = amountToRemove;
+        for (SpawnerSlot slot : spawnerSlots) {
+            if (remainingToRemove <= 0) {
+                break;
+            }
+            ItemStack item = player.getInventory().getItem(slot.slotIndex);
+            if (!SpawnerTypeChecker.isOmniSpawner(item)) {
+                continue;
+            }
+            int itemAmount = item.getAmount();
+            if (itemAmount <= remainingToRemove) {
+                player.getInventory().setItem(slot.slotIndex, null);
+                remainingToRemove -= itemAmount;
+            } else {
+                item.setAmount(itemAmount - remainingToRemove);
+                remainingToRemove = 0;
+            }
+        }
         player.updateInventory();
     }
 
@@ -974,7 +1045,9 @@ public class SpawnerStackerHandler implements Listener {
         for (int i = 0; i < contents.length && remainingAmount > 0; i++) {
             ItemStack item = contents[i];
             // Skip null items, non-spawners, or vanilla spawners
-            if (item == null || item.getType() != Material.SPAWNER || SpawnerTypeChecker.isVanillaSpawner(item)) {
+            if (item == null || item.getType() != Material.SPAWNER
+                    || SpawnerTypeChecker.isVanillaSpawner(item)
+                    || SpawnerTypeChecker.isOmniSpawner(item)) {
                 continue;
             }
 
@@ -1018,6 +1091,43 @@ public class SpawnerStackerHandler implements Listener {
         }
 
         // Update inventory
+        player.updateInventory();
+    }
+
+    public void giveOmniSpawnersToPlayer(Player player, int amount) {
+        int remainingAmount = amount;
+        ItemStack[] contents = player.getInventory().getContents();
+        for (ItemStack item : contents) {
+            if (remainingAmount <= 0) {
+                break;
+            }
+            if (!SpawnerTypeChecker.isOmniSpawner(item)) {
+                continue;
+            }
+            int maxStack = Math.max(1, item.getMaxStackSize());
+            int canAdd = Math.min(maxStack - item.getAmount(),
+                    remainingAmount);
+            if (canAdd > 0) {
+                item.setAmount(item.getAmount() + canAdd);
+                remainingAmount -= canAdd;
+            }
+        }
+
+        boolean allFit = true;
+        while (remainingAmount > 0) {
+            int stackSize = Math.min(64, remainingAmount);
+            ItemStack stack =
+                    spawnerItemFactory.createOmniSpawnerItem(stackSize);
+            if (!addItemAvoidingVanillaSpawners(player, stack)) {
+                player.getWorld().dropItemNaturally(
+                        player.getLocation(), stack);
+                allFit = false;
+            }
+            remainingAmount -= stackSize;
+        }
+        if (!allFit) {
+            messageService.sendMessage(player, "inventory_full");
+        }
         player.updateInventory();
     }
 
@@ -1143,6 +1253,9 @@ public class SpawnerStackerHandler implements Listener {
     }
 
     private boolean canUseStacker(Player player, SpawnerData spawner) {
+        if (spawner.isOmniSpawner()) {
+            return true;
+        }
         if (player.hasPermission(DROP_CHANCE_BYPASS_PERMISSION)) {
             return true;
         }

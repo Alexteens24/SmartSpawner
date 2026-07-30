@@ -8,7 +8,6 @@ import github.nighter.smartspawner.utils.ItemTooltipUtil;
 import github.nighter.smartspawner.spawner.config.SpawnerMobHeadTexture;
 import github.nighter.smartspawner.spawner.gui.layout.GuiButton;
 import github.nighter.smartspawner.spawner.gui.layout.GuiLayout;
-import github.nighter.smartspawner.spawner.lootgen.loot.EntityLootConfig;
 import github.nighter.smartspawner.spawner.lootgen.loot.LootItem;
 import github.nighter.smartspawner.spawner.properties.SpawnerData;
 import org.bukkit.Bukkit;
@@ -215,7 +214,10 @@ public class SpawnerSellConfirmUI {
         ItemStack spawnerItem;
 
         // OPTIMIZATION: Get cached spawner type from placeholders
-        if (placeholders.containsKey("spawnedItem")) {
+        if (spawner.isOmniSpawner()) {
+            spawnerItem = new ItemStack(Material.SPAWNER);
+            spawnerItem.editMeta(metaModifier);
+        } else if (placeholders.containsKey("spawnedItem")) {
             spawnerItem = SpawnerMobHeadTexture.getItemSpawnerHead(
                 Material.valueOf(placeholders.get("spawnedItem")), player, metaModifier);
         } else {
@@ -238,9 +240,8 @@ public class SpawnerSellConfirmUI {
             materialAmountMap.merge(material, entry.getValue(), SpawnerSellConfirmUI::saturatingAdd);
         }
 
-        EntityType entityType = spawner.getEntityType();
-        EntityLootConfig lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(entityType);
-        List<LootItem> possibleLootItems = lootConfig != null ? lootConfig.getAllItems() : Collections.emptyList();
+        List<LootItem> possibleLootItems =
+                new ArrayList<>(spawner.getValidLootItems());
 
         if (possibleLootItems.isEmpty() && storedItems.isEmpty()) {
             return Collections.emptyList();
@@ -280,16 +281,14 @@ public class SpawnerSellConfirmUI {
         Map<String, String> placeholders = new HashMap<>(12);
 
         // OPTIMIZATION: Get entity name once and cache
-        String entityName;
+        String entityName = spawner.getDisplayEntityName();
         boolean isItemSpawner = spawner.isItemSpawner();
 
         if (isItemSpawner) {
             Material spawnedItem = spawner.getSpawnedItemMaterial();
-            entityName = languageManager.getVanillaItemName(spawnedItem);
             placeholders.put("spawnedItem", spawnedItem.name());
         } else {
             org.bukkit.entity.EntityType entityType = spawner.getEntityType();
-            entityName = languageManager.getFormattedMobName(entityType);
             placeholders.put("entityType", entityType.name());
         }
 

@@ -72,7 +72,8 @@ public record SpawnerSnapshot(
                     location.getBlockX(),
                     location.getBlockY(),
                     location.getBlockZ(),
-                    spawner.getEntityType().name(),
+                    spawner.isOmniSpawner()
+                            ? "OMNI" : spawner.getEntityType().name(),
                     spawner.isItemSpawner() ? spawner.getSpawnedItemMaterial().name() : null,
                     Math.max(0L, spawner.getSpawnerExp()),
                     spawner.getSpawnerActive(),

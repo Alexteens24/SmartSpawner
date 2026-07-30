@@ -60,6 +60,11 @@ public class SpawnEggHandler {
             return;
         }
 
+        if (spawnerData.isOmniSpawner()) {
+            messageService.sendMessage(player, "omni_cannot_change");
+            return;
+        }
+
         // Check permission
         if (!player.hasPermission(PERMISSION_CHANGE_TYPE)) {
             messageService.sendMessage(player, NO_PERMISSION_KEY);

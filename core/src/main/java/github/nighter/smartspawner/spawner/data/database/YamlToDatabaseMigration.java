@@ -264,12 +264,17 @@ public class YamlToDatabaseMigration {
             return false;
         }
 
+        boolean omniSpawner = "OMNI".equalsIgnoreCase(entityTypeString);
         EntityType entityType;
-        try {
-            entityType = EntityType.valueOf(entityTypeString);
-        } catch (IllegalArgumentException e) {
-            logger.warning("Invalid entity type for spawner " + spawnerId + ": " + entityTypeString + ", skipping.");
-            return false;
+        if (omniSpawner) {
+            entityType = EntityType.PIG;
+        } else {
+            try {
+                entityType = EntityType.valueOf(entityTypeString);
+            } catch (IllegalArgumentException e) {
+                logger.warning("Invalid entity type for spawner " + spawnerId + ": " + entityTypeString + ", skipping.");
+                return false;
+            }
         }
 
         // Parse item spawner material (if applicable)
@@ -374,7 +379,7 @@ public class YamlToDatabaseMigration {
         stmt.setInt(4, locX);
         stmt.setInt(5, locY);
         stmt.setInt(6, locZ);
-        stmt.setString(7, entityType.name());
+        stmt.setString(7, omniSpawner ? "OMNI" : entityType.name());
         stmt.setString(8, itemSpawnerMaterial);
         stmt.setLong(9, spawnerExp);
         stmt.setBoolean(10, spawnerActive);

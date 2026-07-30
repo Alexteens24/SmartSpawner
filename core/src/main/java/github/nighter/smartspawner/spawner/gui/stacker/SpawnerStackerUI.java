@@ -63,6 +63,9 @@ public class SpawnerStackerUI {
     }
 
     private boolean hasSpawnerDropChance(SpawnerData spawner) {
+        if (spawner.isOmniSpawner()) {
+            return false;
+        }
         SpawnerSettingsConfig settingsConfig = plugin.getSpawnerSettingsConfig();
         return settingsConfig != null && settingsConfig.hasSpawnerDropChance(spawner.getEntityType());
     }
@@ -111,7 +114,7 @@ public class SpawnerStackerUI {
         placeholders.put("plural", amount > 1 ? "s" : "");
         placeholders.put("stack_size", String.valueOf(spawner.getStackSize()));
         placeholders.put("max_stack_size", String.valueOf(spawner.getMaxStackSize()));
-        placeholders.put("entity", languageManager.getFormattedMobName(spawner.getEntityType()));
+        placeholders.put("entity", spawner.getDisplayEntityName());
         placeholders.put("ᴇɴᴛɪᴛʏ", languageManager.getSmallCaps(placeholders.get("entity")));
         return placeholders;
     }

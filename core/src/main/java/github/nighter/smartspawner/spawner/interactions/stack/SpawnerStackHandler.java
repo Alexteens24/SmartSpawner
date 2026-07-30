@@ -127,6 +127,13 @@ public class SpawnerStackHandler {
         // Check if the item is an item spawner
         boolean isItemSpawnerItem = SpawnerTypeChecker.isItemSpawner(itemInHand);
         boolean isTargetItemSpawner = targetSpawner.isItemSpawner();
+        boolean isOmniSpawnerItem = SpawnerTypeChecker.isOmniSpawner(itemInHand);
+        boolean isTargetOmniSpawner = targetSpawner.isOmniSpawner();
+
+        if (isOmniSpawnerItem != isTargetOmniSpawner) {
+            messageService.sendMessage(player, "spawner_different");
+            return false;
+        }
 
         // Both must be item spawners or both must be regular spawners
         if (isItemSpawnerItem != isTargetItemSpawner) {
@@ -135,7 +142,9 @@ public class SpawnerStackHandler {
         }
 
         // If both are item spawners, check if they spawn the same item
-        if (isItemSpawnerItem && isTargetItemSpawner) {
+        if (isTargetOmniSpawner) {
+            // The dedicated PDC marker is the type identity for omni spawners.
+        } else if (isItemSpawnerItem && isTargetItemSpawner) {
             Material handItemMaterial = SpawnerTypeChecker.getItemSpawnerMaterial(itemInHand);
             Material targetItemMaterial = targetSpawner.getSpawnedItemMaterial();
 

@@ -162,7 +162,33 @@ public class SpawnerBreakListener implements Listener {
                             "lifetime.expired_storage_not_empty");
                     return false;
                 }
+
+                ItemStack emptyCage =
+                        spawnerItemFactory.createEmptySpawnerItem();
+                int cageAmount = currentSpawner.getStackSize();
+                int maxStack = Math.max(1, emptyCage.getMaxStackSize());
+                long physicalStacks =
+                        (cageAmount + (long) maxStack - 1L) / maxStack;
+                if (physicalStacks > MAX_PHYSICAL_DROP_STACKS) {
+                    messageService.sendMessage(player,
+                            "break_too_many_drops");
+                    return false;
+                }
+
+                plugin.getSpawnerGuiViewManager()
+                        .closeAllViewersInventory(currentSpawner);
+                Location dropLocation =
+                        findSafeDropLocation(block, player);
                 cleanupSpawner(block, currentSpawner);
+
+                if (breakConfig.isDirectToInventory()) {
+                    giveSpawnersToPlayer(player, cageAmount, emptyCage);
+                    player.playSound(player.getLocation(),
+                            Sound.ENTITY_ITEM_PICKUP, 0.5f, 1.2f);
+                } else {
+                    dropItemStacks(block.getWorld(), dropLocation,
+                            emptyCage, cageAmount);
+                }
                 if (player.getGameMode() != GameMode.CREATIVE) {
                     reduceDurability(tool, player, breakConfig.getDurabilityLoss());
                 }
@@ -304,7 +330,17 @@ public class SpawnerBreakListener implements Listener {
 
         // Create the appropriate spawner item based on type
         ItemStack template;
-        if (spawner.isItemSpawner()) {
+        if (spawner.isOmniSpawner()) {
+            if (spawner.isTimed()) {
+                long perSpawnerDuration = Math.max(1L,
+                        spawner.getRemainingLifetimeMillis()
+                                / Math.max(1, currentStackSize));
+                template = spawnerItemFactory.createOmniSpawnerItem(
+                        1, perSpawnerDuration);
+            } else {
+                template = spawnerItemFactory.createOmniSpawnerItem(1);
+            }
+        } else if (spawner.isItemSpawner()) {
             template = spawnerItemFactory.createItemSpawnerItem(spawner.getSpawnedItemMaterial());
         } else {
             EntityType entityType = spawner.getEntityType();
@@ -385,18 +421,14 @@ public class SpawnerBreakListener implements Listener {
             return;
         }
 
-        int remaining = result.getDroppedAmount();
-        int maxStack = Math.max(1, result.getDropTemplate().getMaxStackSize());
-        while (remaining > 0) {
-            ItemStack dropItem = result.getDropTemplate().clone();
-            int amount = Math.min(maxStack, remaining);
-            dropItem.setAmount(amount);
-            world.dropItemNaturally(findSafeDropLocation(spawnerBlock, player), dropItem);
-            remaining -= amount;
-        }
+        dropItemStacks(world, findSafeDropLocation(spawnerBlock, player),
+                result.getDropTemplate(), result.getDroppedAmount());
     }
 
     private double getSmartSpawnerDropChance(SpawnerData spawner) {
+        if (spawner.isOmniSpawner()) {
+            return 100.0;
+        }
         SpawnerSettingsConfig settingsConfig = plugin.getSpawnerSettingsConfig();
         if (settingsConfig == null) {
             return 100.0;
@@ -405,6 +437,9 @@ public class SpawnerBreakListener implements Listener {
     }
 
     private boolean hasSmartSpawnerDropChance(SpawnerData spawner) {
+        if (spawner.isOmniSpawner()) {
+            return false;
+        }
         SpawnerSettingsConfig settingsConfig = plugin.getSpawnerSettingsConfig();
         return settingsConfig != null && settingsConfig.hasSpawnerDropChance(spawner.getEntityType());
     }
@@ -586,6 +621,19 @@ public class SpawnerBreakListener implements Listener {
         }
 
         player.updateInventory();
+    }
+
+    private void dropItemStacks(World world, Location dropLocation,
+                                ItemStack template, int amount) {
+        int remaining = amount;
+        int maxStack = Math.max(1, template.getMaxStackSize());
+        while (remaining > 0) {
+            ItemStack dropItem = template.clone();
+            int stackAmount = Math.min(maxStack, remaining);
+            dropItem.setAmount(stackAmount);
+            world.dropItemNaturally(dropLocation, dropItem);
+            remaining -= stackAmount;
+        }
     }
 
     private void giveStoredItemsToPlayer(Player player, SpawnerData spawner) {

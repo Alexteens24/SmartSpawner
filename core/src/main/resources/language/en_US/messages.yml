@@ -99,6 +99,10 @@ spawner_different:
   action_bar: '&#FF4444Spawners must be the same type.'
   sound: block.note_block.pling
 
+omni_cannot_change:
+  message: '&#FF4444An Omni Spawner cannot be changed with a spawn egg.'
+  sound: block.note_block.pling
+
 spawner_stack_full:
   action_bar: '&#FF4444Maximum stack limit: &f{max}'
   sound: block.note_block.pling

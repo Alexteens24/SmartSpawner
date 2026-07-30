@@ -91,6 +91,14 @@ vanilla_spawner:
     name: "Spawner {entity}"
     lore:
 
+omni_spawner:
+  name: '&#D66BFFOmni Spawner'
+  lore:
+    - ''
+    - '&7Cộng loot và EXP của mọi mob đã cấu hình trong mỗi chu kỳ.'
+    - ' &#D66BFF• &fSố loại mob: &e{mob_count}'
+    - ' &#D66BFF• &fTổng EXP cơ bản: &e{exp}'
+
 timed_spawner:
   lore:
     - ' &#5DB5F1• &fThời hạn mỗi lồng: &e{duration}'

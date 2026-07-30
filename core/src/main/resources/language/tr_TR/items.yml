@@ -91,6 +91,14 @@ vanilla_spawner:
     name: "{entity} Spawner"
     lore:
 
+omni_spawner:
+  name: '&#D66BFFOmni Spawner'
+  lore:
+    - ''
+    - '&7Her döngüde yapılandırılmış tüm yaratıkların ganimet ve EXP değerini birleştirir.'
+    - ' &#D66BFF• &fYaratık türü: &e{mob_count}'
+    - ' &#D66BFF• &fToplam temel EXP: &e{exp}'
+
 timed_spawner:
   lore:
     - ' &#5DB5F1• &fSpawner başına süre: &e{duration}'

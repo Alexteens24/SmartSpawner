@@ -99,6 +99,10 @@ spawner_different:
   action_bar: '&#FF4444Các spawner phải cùng loại.'
   sound: block.note_block.pling
 
+omni_cannot_change:
+  message: '&#FF4444Không thể đổi loại Omni Spawner bằng trứng spawn.'
+  sound: block.note_block.pling
+
 spawner_stack_full:
   action_bar: '&#FF4444Giới hạn stack tối đa: &f{max}'
   sound: block.note_block.pling

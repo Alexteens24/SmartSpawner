@@ -7,7 +7,6 @@ import github.nighter.smartspawner.spawner.config.SpawnerMobHeadTexture;
 import github.nighter.smartspawner.spawner.gui.layout.GuiButton;
 import github.nighter.smartspawner.spawner.gui.layout.GuiLayout;
 import github.nighter.smartspawner.spawner.gui.layout.GuiLayoutConfig;
-import github.nighter.smartspawner.spawner.lootgen.loot.EntityLootConfig;
 import github.nighter.smartspawner.spawner.lootgen.loot.LootItem;
 import github.nighter.smartspawner.spawner.properties.ItemSignature;
 import github.nighter.smartspawner.spawner.properties.VirtualInventory;
@@ -189,12 +188,7 @@ public class SpawnerStorageUI {
 
         // OPTIMIZATION: Only compute entity placeholders if they exist in the title format
         if (titleFormat.contains("{entity}") || titleFormat.contains("{ᴇɴᴛɪᴛʏ}")) {
-            String entityName;
-            if (spawner.isItemSpawner()) {
-                entityName = languageManager.getVanillaItemName(spawner.getSpawnedItemMaterial());
-            } else {
-                entityName = languageManager.getFormattedMobName(spawner.getEntityType());
-            }
+            String entityName = spawner.getDisplayEntityName();
 
             if (titleFormat.contains("{entity}")) {
                 placeholders.put("entity", entityName);
@@ -543,12 +537,7 @@ public class SpawnerStorageUI {
         List<Component> lootComponents = buildStorageInfoLootComponents(spawner, storedItems);
 
         Map<String, String> placeholders = new HashMap<>();
-        String entityName;
-        if (spawner.isItemSpawner()) {
-            entityName = languageManager.getVanillaItemName(spawner.getSpawnedItemMaterial());
-        } else {
-            entityName = languageManager.getFormattedMobName(spawner.getEntityType());
-        }
+        String entityName = spawner.getDisplayEntityName();
         placeholders.put("entity", entityName);
         placeholders.put("ᴇɴᴛɪᴛʏ", languageManager.getSmallCaps(entityName));
         placeholders.put("stack_size", String.valueOf(spawner.getStackSize()));
@@ -577,7 +566,10 @@ public class SpawnerStorageUI {
         };
 
         ItemStack item;
-        if (spawner.isItemSpawner()) {
+        if (spawner.isOmniSpawner()) {
+            item = new ItemStack(Material.SPAWNER);
+            item.editMeta(metaModifier);
+        } else if (spawner.isItemSpawner()) {
             item = SpawnerMobHeadTexture.getItemSpawnerHead(spawner.getSpawnedItemMaterial(), metaModifier);
         } else if (button.getMaterial() == Material.PLAYER_HEAD) {
             String customTexture = button.getCustomTexture();
@@ -606,13 +598,8 @@ public class SpawnerStorageUI {
             materialAmountMap.merge(mat, entry.getValue(), SpawnerStorageUI::saturatingAdd);
         }
 
-        EntityLootConfig lootConfig;
-        if (spawner.isItemSpawner()) {
-            lootConfig = plugin.getItemSpawnerSettingsConfig().getLootConfig(spawner.getSpawnedItemMaterial());
-        } else {
-            lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(spawner.getEntityType());
-        }
-        List<LootItem> possibleLootItems = lootConfig != null ? lootConfig.getAllItems() : Collections.emptyList();
+        List<LootItem> possibleLootItems =
+                new ArrayList<>(spawner.getValidLootItems());
 
         if (possibleLootItems.isEmpty() && storedItems.isEmpty()) {
             return Collections.emptyList();

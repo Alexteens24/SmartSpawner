@@ -4,6 +4,7 @@ import github.nighter.smartspawner.SmartSpawner;
 import github.nighter.smartspawner.language.LanguageManager;
 import github.nighter.smartspawner.language.format.ColorUtil;
 import github.nighter.smartspawner.spawner.lifetime.SpawnerDuration;
+import github.nighter.smartspawner.utils.DynamicEntityValidator;
 import github.nighter.smartspawner.spawner.lootgen.loot.EntityLootConfig;
 import github.nighter.smartspawner.spawner.lootgen.loot.LootItem;
 import github.nighter.smartspawner.utils.ItemTooltipUtil;
@@ -33,6 +34,7 @@ public class SpawnerItemFactory {
     private static NamespacedKey VANILLA_SPAWNER_KEY;
     private static NamespacedKey LIFETIME_DURATION_KEY;
     private static NamespacedKey EMPTY_SPAWNER_KEY;
+    private static NamespacedKey OMNI_SPAWNER_KEY;
     private final Map<EntityType, ItemStack> spawnerItemCache = new HashMap<>();
     private final Map<EntityType, Long> cacheTimestamps = new HashMap<>();
     private long lastCacheCleanup = System.currentTimeMillis();
@@ -43,6 +45,7 @@ public class SpawnerItemFactory {
         VANILLA_SPAWNER_KEY = new NamespacedKey(plugin, "vanilla_spawner");
         LIFETIME_DURATION_KEY = new NamespacedKey(plugin, "lifetime_duration_ms");
         EMPTY_SPAWNER_KEY = new NamespacedKey(plugin, "empty_spawner");
+        OMNI_SPAWNER_KEY = new NamespacedKey(plugin, "omni_spawner");
     }
 
     public void reload() {
@@ -178,6 +181,84 @@ public class SpawnerItemFactory {
         meta.lore(lore);
         spawner.setItemMeta(meta);
         return spawner;
+    }
+
+    public ItemStack createOmniSpawnerItem(int amount) {
+        ItemStack spawner = new ItemStack(Material.SPAWNER, amount);
+        ItemMeta meta = spawner.getItemMeta();
+        if (meta == null) {
+            return spawner;
+        }
+
+        if (meta instanceof BlockStateMeta blockMeta
+                && blockMeta.getBlockState() instanceof CreatureSpawner cs) {
+            // Minecraft still requires a concrete block-state entity. Runtime
+            // SmartSpawner data carries the OMNI semantics.
+            cs.setSpawnedType(EntityType.PIG);
+            blockMeta.setBlockState(cs);
+        }
+
+        long combinedExp = 0L;
+        int configuredMobs = 0;
+        for (EntityType type : DynamicEntityValidator.getValidEntities()) {
+            EntityLootConfig config =
+                    plugin.getSpawnerSettingsConfig().getLootConfig(type);
+            if (config == null) {
+                continue;
+            }
+            configuredMobs++;
+            combinedExp = saturatingAdd(combinedExp,
+                    Math.max(0L, config.experience()));
+        }
+
+        Map<String, String> placeholders = new HashMap<>();
+        placeholders.put("mob_count", String.valueOf(configuredMobs));
+        placeholders.put("exp", String.valueOf(combinedExp));
+        meta.setDisplayName(languageManager.getItemName(
+                "omni_spawner.name", placeholders));
+        List<String> lore = Arrays.asList(languageManager.getItemLore(
+                "omni_spawner.lore", placeholders));
+        if (!lore.isEmpty()) {
+            meta.setLore(lore);
+        }
+        meta.getPersistentDataContainer().set(
+                OMNI_SPAWNER_KEY, PersistentDataType.BOOLEAN, true);
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+        spawner.setItemMeta(meta);
+        ItemTooltipUtil.hideTooltip(spawner);
+        return spawner;
+    }
+
+    public ItemStack createOmniSpawnerItem(int amount, long durationMillis) {
+        ItemStack spawner = createOmniSpawnerItem(amount);
+        ItemMeta meta = spawner.getItemMeta();
+        if (meta == null) {
+            return spawner;
+        }
+        meta.getPersistentDataContainer().set(
+                LIFETIME_DURATION_KEY,
+                PersistentDataType.LONG,
+                durationMillis);
+        List<Component> lore = meta.lore() == null
+                ? new ArrayList<>()
+                : new ArrayList<>(Objects.requireNonNull(meta.lore()));
+        Map<String, String> placeholders = Map.of(
+                "duration", SpawnerDuration.formatCompact(durationMillis));
+        for (String line : languageManager.getItemLore(
+                "timed_spawner.lore", placeholders)) {
+            lore.add(LegacyComponentSerializer.legacySection().deserialize(
+                    ColorUtil.translateHexColorCodes(line)));
+        }
+        meta.lore(lore);
+        spawner.setItemMeta(meta);
+        return spawner;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (right > 0L && left > Long.MAX_VALUE - right) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
     }
 
     public ItemStack createEmptySpawnerItem() {

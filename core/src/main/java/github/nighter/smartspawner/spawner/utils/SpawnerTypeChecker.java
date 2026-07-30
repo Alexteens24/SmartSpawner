@@ -15,6 +15,7 @@ public class SpawnerTypeChecker {
     private static NamespacedKey ITEM_SPAWNER_KEY;
     private static NamespacedKey LIFETIME_DURATION_KEY;
     private static NamespacedKey EMPTY_SPAWNER_KEY;
+    private static NamespacedKey OMNI_SPAWNER_KEY;
 
     /**
      * Initializes the spawner type checker with plugin instance
@@ -25,6 +26,7 @@ public class SpawnerTypeChecker {
         ITEM_SPAWNER_KEY = new NamespacedKey(plugin, "item_spawner_material");
         LIFETIME_DURATION_KEY = new NamespacedKey(plugin, "lifetime_duration_ms");
         EMPTY_SPAWNER_KEY = new NamespacedKey(plugin, "empty_spawner");
+        OMNI_SPAWNER_KEY = new NamespacedKey(plugin, "omni_spawner");
     }
 
     /**
@@ -93,6 +95,16 @@ public class SpawnerTypeChecker {
         ItemMeta meta = item.getItemMeta();
         return meta != null && meta.getPersistentDataContainer().has(
                 EMPTY_SPAWNER_KEY, PersistentDataType.BOOLEAN);
+    }
+
+    public static boolean isOmniSpawner(ItemStack item) {
+        if (item == null || item.getType() != Material.SPAWNER
+                || !item.hasItemMeta()) {
+            return false;
+        }
+        ItemMeta meta = item.getItemMeta();
+        return meta != null && meta.getPersistentDataContainer().has(
+                OMNI_SPAWNER_KEY, PersistentDataType.BOOLEAN);
     }
 
     public static long getLifetimeDurationMillis(ItemStack item) {

@@ -91,6 +91,14 @@ vanilla_spawner:
     name: "{entity} Spawner"
     lore:
 
+omni_spawner:
+  name: '&#D66BFFOmni Spawner'
+  lore:
+    - ''
+    - '&7Combines loot and EXP from every configured mob each cycle.'
+    - ' &#D66BFF• &fMob types: &e{mob_count}'
+    - ' &#D66BFF• &fCombined base EXP: &e{exp}'
+
 timed_spawner:
   lore:
     - ' &#5DB5F1• &fLifetime per spawner: &e{duration}'

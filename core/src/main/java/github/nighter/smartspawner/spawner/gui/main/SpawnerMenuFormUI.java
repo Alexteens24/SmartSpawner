@@ -320,7 +320,7 @@ public class SpawnerMenuFormUI {
     }
 
     private Map<String, String> createPlaceholders(SpawnerData spawner) {
-        String entityName = languageManager.getFormattedMobName(spawner.getEntityType());
+        String entityName = spawner.getDisplayEntityName();
         String entityNameSmallCaps = languageManager.getSmallCaps(entityName);
 
         Map<String, String> placeholders = new HashMap<>();

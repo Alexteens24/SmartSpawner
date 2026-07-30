@@ -517,12 +517,17 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
 
         Location location = new Location(world, x, y, z);
         String entityTypeStr = rs.getString("entity_type");
+        boolean omniSpawner = "OMNI".equalsIgnoreCase(entityTypeStr);
         EntityType entityType;
-        try {
-            entityType = EntityType.valueOf(entityTypeStr);
-        } catch (IllegalArgumentException e) {
-            logger.severe("Invalid entity type for spawner " + spawnerId + ": " + entityTypeStr);
-            return null;
+        if (omniSpawner) {
+            entityType = EntityType.PIG;
+        } else {
+            try {
+                entityType = EntityType.valueOf(entityTypeStr);
+            } catch (IllegalArgumentException e) {
+                logger.severe("Invalid entity type for spawner " + spawnerId + ": " + entityTypeStr);
+                return null;
+            }
         }
 
         // Create spawner based on type
@@ -538,6 +543,9 @@ public class SpawnerDatabaseHandler implements SpawnerStorage {
             }
         } else {
             spawner = new SpawnerData(spawnerId, location, entityType, plugin);
+        }
+        if (omniSpawner) {
+            spawner.setOmniSpawner(true);
         }
 
         // Load settings

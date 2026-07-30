@@ -390,14 +390,19 @@ public class SpawnerFileHandler implements SpawnerStorage {
             return null;
         }
 
+        boolean omniSpawner = "OMNI".equalsIgnoreCase(entityTypeString);
         EntityType entityType;
-        try {
-            entityType = EntityType.valueOf(entityTypeString);
-        } catch (IllegalArgumentException e) {
-            if (logErrors) {
-                logger.severe("Invalid entity type for spawner " + spawnerId + ": " + entityTypeString);
+        if (omniSpawner) {
+            entityType = EntityType.PIG;
+        } else {
+            try {
+                entityType = EntityType.valueOf(entityTypeString);
+            } catch (IllegalArgumentException e) {
+                if (logErrors) {
+                    logger.severe("Invalid entity type for spawner " + spawnerId + ": " + entityTypeString);
+                }
+                return null;
             }
-            return null;
         }
 
         // Check if this is an item spawner
@@ -420,6 +425,9 @@ public class SpawnerFileHandler implements SpawnerStorage {
             }
         } else {
             spawner = new SpawnerData(spawnerId, location, entityType, plugin);
+        }
+        if (omniSpawner) {
+            spawner.setOmniSpawner(true);
         }
 
         String settingsString = spawnerData.getString(path + ".settings");

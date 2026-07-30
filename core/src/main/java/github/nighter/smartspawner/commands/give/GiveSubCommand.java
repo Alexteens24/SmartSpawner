@@ -190,20 +190,18 @@ public class GiveSubCommand extends BaseSubCommand {
             String mobType = StringArgumentType.getString(context, "mobType");
 
             if (!isVanilla && mobType.equalsIgnoreCase("all")) {
-                for (String supportedMob : supportedMobs) {
-                    EntityType entityType = EntityType.valueOf(supportedMob);
-                    ItemStack item = durationMillis > 0L
-                            ? spawnerItemFactory.createSmartSpawnerItem(entityType, amount, durationMillis)
-                            : spawnerItemFactory.createSmartSpawnerItem(entityType, amount);
-                    giveOrDropOverflow(target, item);
-                }
+                ItemStack item = durationMillis > 0L
+                        ? spawnerItemFactory.createOmniSpawnerItem(
+                                amount, durationMillis)
+                        : spawnerItemFactory.createOmniSpawnerItem(amount);
+                giveOrDropOverflow(target, item);
                 target.playSound(target.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.0f);
 
                 Map<String, String> placeholders = new HashMap<>();
                 placeholders.put("player", target.getName());
                 placeholders.put("amount", String.valueOf(amount));
-                placeholders.put("entity", "all supported mobs");
-                placeholders.put("ᴇɴᴛɪᴛʏ", "all supported mobs");
+                placeholders.put("entity", "Omni");
+                placeholders.put("ᴇɴᴛɪᴛʏ", "ᴏᴍɴɪ");
                 plugin.getMessageService().sendMessage(sender, "give.spawner_given", placeholders);
                 plugin.getMessageService().sendMessage(target, "give.spawner_received", placeholders);
                 return 1;

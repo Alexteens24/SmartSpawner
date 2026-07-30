@@ -5,6 +5,7 @@ import github.nighter.smartspawner.commands.hologram.SpawnerHologram;
 import github.nighter.smartspawner.spawner.lootgen.loot.EntityLootConfig;
 import github.nighter.smartspawner.spawner.lootgen.loot.LootItem;
 import github.nighter.smartspawner.spawner.sell.SellResult;
+import github.nighter.smartspawner.utils.DynamicEntityValidator;
 import lombok.Getter;
 import lombok.Setter;
 import org.bukkit.Location;
@@ -82,6 +83,8 @@ public class SpawnerData {
 
     @Getter
     private EntityType entityType;
+    @Getter
+    private boolean omniSpawner;
     @Getter @Setter
     private EntityLootConfig lootConfig;
 
@@ -188,6 +191,7 @@ public class SpawnerData {
         this.sellValueDirty = true;
         this.lifetimeExpiresAt = -1L;
         this.expired = false;
+        this.omniSpawner = false;
     }
 
     public void loadConfigurationValues() {
@@ -201,7 +205,9 @@ public class SpawnerData {
         this.spawnerRange = plugin.getConfig().getInt("spawner_properties.default.range", 16);
 
         // Load loot config based on spawner type
-        if (isItemSpawner() && spawnedItemMaterial != null) {
+        if (omniSpawner) {
+            this.lootConfig = null;
+        } else if (isItemSpawner() && spawnedItemMaterial != null) {
             this.lootConfig = plugin.getItemSpawnerSettingsConfig().getLootConfig(spawnedItemMaterial);
         } else {
             this.lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(entityType);
@@ -417,7 +423,8 @@ public class SpawnerData {
         if (hologram != null) {
             hologram.updateData(stackSize, entityType, spawnerExp, maxStoredExp,
                     virtualInventory.getUsedSlots(), maxSpawnerLootSlots,
-                    getRemainingLifetimeMillis(), isTimed(), expired);
+                    getRemainingLifetimeMillis(), isTimed(), expired,
+                    omniSpawner);
         }
     }
 
@@ -477,6 +484,7 @@ public class SpawnerData {
     }
 
     public void setEntityType(EntityType newType) {
+        this.omniSpawner = false;
         this.entityType = newType;
         this.lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(newType);
         // Mark sell value as dirty since entity type and prices changed
@@ -495,6 +503,14 @@ public class SpawnerData {
     }
 
     public List<LootItem> getValidLootItems() {
+        if (omniSpawner) {
+            return DynamicEntityValidator.getValidEntities().stream()
+                    .map(plugin.getSpawnerSettingsConfig()::getLootConfig)
+                    .filter(Objects::nonNull)
+                    .flatMap(config -> config.getAllItems().stream())
+                    .filter(this::isLootItemValid)
+                    .collect(Collectors.toList());
+        }
         if (lootConfig == null) {
             return Collections.emptyList();
         }
@@ -508,8 +524,19 @@ public class SpawnerData {
         return example != null && !filteredItems.contains(example.getType());
     }
 
-    public int getEntityExperienceValue() {
-        return lootConfig != null ? lootConfig.experience() : 0;
+    public long getEntityExperienceValue() {
+        if (omniSpawner) {
+            long total = 0L;
+            for (EntityType type : DynamicEntityValidator.getValidEntities()) {
+                EntityLootConfig config =
+                        plugin.getSpawnerSettingsConfig().getLootConfig(type);
+                if (config != null && config.experience() > 0) {
+                    total = saturatingLongAdd(total, config.experience());
+                }
+            }
+            return total;
+        }
+        return lootConfig != null ? lootConfig.experience() : 0L;
     }
 
     /**
@@ -526,15 +553,17 @@ public class SpawnerData {
         }
 
         // Calculate and cache the result
-        boolean result = (lootConfig == null ||
-                (lootConfig.experience() == 0 && getValidLootItems().isEmpty()));
+        boolean result = getEntityExperienceValue() == 0L
+                && getValidLootItems().isEmpty();
         cachedHasNoLoot = result;
         return result;
     }
 
     public void setLootConfig() {
         // Load loot config based on spawner type
-        if (isItemSpawner() && spawnedItemMaterial != null) {
+        if (omniSpawner) {
+            this.lootConfig = null;
+        } else if (isItemSpawner() && spawnedItemMaterial != null) {
             this.lootConfig = plugin.getItemSpawnerSettingsConfig().getLootConfig(spawnedItemMaterial);
         } else {
             this.lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(entityType);
@@ -678,7 +707,7 @@ public class SpawnerData {
     public void recalculateSellValue() {
         inventoryLock.lock();
         try {
-            if (lootConfig == null) {
+            if (lootConfig == null && !omniSpawner) {
                 this.accumulatedSellValue = 0.0;
                 this.sellValueDirty = false;
                 return;
@@ -707,13 +736,15 @@ public class SpawnerData {
      * shop plugin prices aren't yet available when LootItem.sellPrice is baked in.
      */
     public Map<String, Double> createPriceCache() {
-        if (lootConfig == null) {
+        if (lootConfig == null && !omniSpawner) {
             return new java.util.HashMap<>();
         }
 
         github.nighter.smartspawner.hooks.economy.ItemPriceManager priceManager = plugin.getItemPriceManager();
         Map<String, Double> cache = new java.util.HashMap<>();
-        java.util.List<LootItem> allLootItems = lootConfig.getAllItems();
+        java.util.List<LootItem> allLootItems = omniSpawner
+                ? getValidLootItems()
+                : lootConfig.getAllItems();
 
         for (LootItem lootItem : allLootItems) {
             // Use live price from ItemPriceManager; fall back to baked sellPrice if unavailable
@@ -1000,5 +1031,37 @@ public class SpawnerData {
      */
     public boolean isItemSpawner() {
         return entityType == EntityType.ITEM && spawnedItemMaterial != null;
+    }
+
+    public void setOmniSpawner(boolean omniSpawner) {
+        this.omniSpawner = omniSpawner;
+        if (omniSpawner) {
+            this.entityType = EntityType.PIG;
+            this.spawnedItemMaterial = null;
+            this.lootConfig = null;
+        } else {
+            setLootConfig();
+        }
+        this.cachedHasNoLoot = null;
+        this.sellValueDirty = true;
+        updateHologramData();
+    }
+
+    public String getDisplayEntityName() {
+        if (omniSpawner) {
+            return "Omni";
+        }
+        if (isItemSpawner()) {
+            return plugin.getLanguageManager().getVanillaItemName(
+                    spawnedItemMaterial);
+        }
+        return plugin.getLanguageManager().getFormattedMobName(entityType);
+    }
+
+    private static long saturatingLongAdd(long left, long right) {
+        if (right > 0L && left > Long.MAX_VALUE - right) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
     }
 }

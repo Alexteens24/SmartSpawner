@@ -184,13 +184,7 @@ public class SpawnerMenuUI {
     }
 
     private Inventory createMenu(SpawnerData spawner, GuiLayout layout) {
-        // Get entity name with caching - for item spawners, use item name
-        String entityName;
-        if (spawner.isItemSpawner()) {
-            entityName = languageManager.getVanillaItemName(spawner.getSpawnedItemMaterial());
-        } else {
-            entityName = languageManager.getFormattedMobName(spawner.getEntityType());
-        }
+        String entityName = spawner.getDisplayEntityName();
         String entityNameSmallCaps = languageManager.getSmallCaps(entityName);
 
         // Use string builder for efficient placeholder creation
@@ -251,7 +245,7 @@ public class SpawnerMenuUI {
             placeholders.put("percent_storage_rounded", String.valueOf(percentStorage));
         }
         final List<Component> finalLootComponents = usedPlaceholders.contains("loot_items") 
-                ? buildLootItemComponents(spawner.getEntityType(), virtualInventory.getConsolidatedItems()) 
+                ? buildLootItemComponents(spawner, virtualInventory.getConsolidatedItems())
                 : Collections.emptyList();
 
         Consumer<ItemMeta> metaModifier = meta -> {
@@ -404,13 +398,7 @@ public class SpawnerMenuUI {
 
         // Entity information
         if (usedPlaceholders.contains("entity") || usedPlaceholders.contains("ᴇɴᴛɪᴛʏ")) {
-            String entityName;
-            // For item spawners, use the item name instead of "Item Spawner"
-            if (spawner.isItemSpawner()) {
-                entityName = languageManager.getVanillaItemName(spawner.getSpawnedItemMaterial());
-            } else {
-                entityName = languageManager.getFormattedMobName(entityType);
-            }
+            String entityName = spawner.getDisplayEntityName();
             if (usedPlaceholders.contains("entity")) {
                 placeholders.put("entity", entityName);
             }
@@ -512,7 +500,10 @@ public class SpawnerMenuUI {
         ItemStack spawnerItem;
 
         // Check if this is an item spawner and use appropriate head
-        if (spawner.isItemSpawner()) {
+        if (spawner.isOmniSpawner()) {
+            spawnerItem = new ItemStack(Material.SPAWNER);
+            spawnerItem.editMeta(metaModifier);
+        } else if (spawner.isItemSpawner()) {
             // For item spawners, use the item material as the head
             spawnerItem = SpawnerMobHeadTexture.getItemSpawnerHead(spawner.getSpawnedItemMaterial(), player, metaModifier);
         } else if (button != null && button.getMaterial() == Material.PLAYER_HEAD && button.getCustomTexture() != null && !button.getCustomTexture().trim().isEmpty()) {
@@ -598,15 +589,16 @@ public class SpawnerMenuUI {
         return maximum > 0 ? (int) ((double) current / maximum * 100) : 0;
     }
 
-    private List<Component> buildLootItemComponents(EntityType entityType, Map<ItemSignature, Long> storedItems) {
+    private List<Component> buildLootItemComponents(SpawnerData spawner,
+            Map<ItemSignature, Long> storedItems) {
         Map<Material, Long> materialAmountMap = new HashMap<>();
         for (Map.Entry<ItemSignature, Long> entry : storedItems.entrySet()) {
             Material material = entry.getKey().getMaterial();
             materialAmountMap.merge(material, entry.getValue(), SpawnerMenuUI::saturatingAdd);
         }
 
-        EntityLootConfig lootConfig = plugin.getSpawnerSettingsConfig().getLootConfig(entityType);
-        List<LootItem> possibleLootItems = lootConfig != null ? lootConfig.getAllItems() : Collections.emptyList();
+        List<LootItem> possibleLootItems =
+                new ArrayList<>(spawner.getValidLootItems());
 
         if (possibleLootItems.isEmpty() && storedItems.isEmpty()) {
             return Collections.emptyList();

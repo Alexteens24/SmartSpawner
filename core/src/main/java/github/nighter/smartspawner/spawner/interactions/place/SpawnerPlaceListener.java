@@ -80,6 +80,7 @@ public class SpawnerPlaceListener implements Listener {
         }
 
         boolean isVanillaSpawner = SpawnerTypeChecker.isVanillaSpawner(item);
+        boolean isOmniSpawner = SpawnerTypeChecker.isOmniSpawner(item);
 
         if (!verifyPlayerInventory(player, item, isVanillaSpawner)) {
             event.setCancelled(true);
@@ -135,7 +136,7 @@ public class SpawnerPlaceListener implements Listener {
         }
 
         handleSpawnerSetup(block, player, storedEntityType, isVanillaSpawner, stackSize,
-                itemSpawnerMaterial, totalDuration);
+                itemSpawnerMaterial, totalDuration, isOmniSpawner);
     }
 
     private boolean checkPlacementCooldown(Player player) {
@@ -231,7 +232,7 @@ public class SpawnerPlaceListener implements Listener {
 
     private void handleSpawnerSetup(Block block, Player player, EntityType entityType,
                                     boolean isVanillaSpawner, int stackSize, Material itemSpawnerMaterial,
-                                    long totalDuration) {
+                                    long totalDuration, boolean omniSpawner) {
         if (entityType == null || entityType == EntityType.UNKNOWN) {
             return;
         }
@@ -268,7 +269,8 @@ public class SpawnerPlaceListener implements Listener {
 
                 delayedSpawner.setSpawnedType(finalEntityType);
                 delayedSpawner.update(true, false);
-                createSmartSpawner(block, player, finalEntityType, stackSize, totalDuration);
+                createSmartSpawner(block, player, finalEntityType, stackSize,
+                        totalDuration, omniSpawner);
             }
 
             setupHopperIntegration(block);
@@ -289,7 +291,7 @@ public class SpawnerPlaceListener implements Listener {
     }
 
     private void createSmartSpawner(Block block, Player player, EntityType entityType, int stackSize,
-                                    long totalDuration) {
+                                    long totalDuration, boolean omniSpawner) {
         // Check if a spawner already exists at this location (prevent duplicates/ghost spawners)
         SpawnerData existingSpawner = spawnerManager.getSpawnerByLocation(block.getLocation());
         if (existingSpawner != null) {
@@ -306,6 +308,9 @@ public class SpawnerPlaceListener implements Listener {
         }
 
         SpawnerData spawner = new SpawnerData(spawnerId, block.getLocation(), entityType, plugin);
+        if (omniSpawner) {
+            spawner.setOmniSpawner(true);
+        }
         spawner.setSpawnerActive(true);
         spawner.setStackSize(stackSize);
         if (totalDuration > 0L) {
